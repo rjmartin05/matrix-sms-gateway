@@ -1,0 +1,31 @@
+[project]
+name = "matrix-sms-gateway"
+version = "0.1.0"
+description = "Matrix appservice bridging a group room to SMS/MMS members via Telnyx"
+requires-python = ">=3.11"
+dependencies = [
+    "mautrix==0.21.1",
+    "aiohttp>=3.10,<4",
+    "aiosqlite>=0.20",
+    "cryptography>=43",
+    "Pillow>=11",
+    "PyYAML>=6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[project.scripts]
+smsgw = "smsgw.__main__:cli"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["smsgw", "smsgw.provider"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]

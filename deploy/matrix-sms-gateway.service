@@ -1,0 +1,27 @@
+[Unit]
+Description=Matrix SMS gateway (Telnyx)
+Requires=docker.service
+After=docker.service matrix-synapse.service
+Wants=matrix-synapse.service
+
+[Service]
+Type=simple
+Environment="HOME=/root"
+ExecStartPre=-/usr/bin/docker stop --time=20 matrix-sms-gateway
+ExecStartPre=-/usr/bin/docker rm matrix-sms-gateway
+ExecStart=/usr/bin/docker run --rm --name=matrix-sms-gateway \
+    --log-driver=none \
+    --network=matrix-homeserver \
+    --publish=127.0.0.1:29341:29341 \
+    --env-file=/matrix/sms-gateway/.env \
+    --mount type=bind,src=/matrix/sms-gateway/data,dst=/data \
+    --read-only --tmpfs /tmp \
+    --cap-drop=ALL --security-opt=no-new-privileges \
+    matrix-sms-gateway:latest
+ExecStop=-/usr/bin/docker stop --time=20 matrix-sms-gateway
+Restart=always
+RestartSec=30
+SyslogIdentifier=matrix-sms-gateway
+
+[Install]
+WantedBy=multi-user.target
