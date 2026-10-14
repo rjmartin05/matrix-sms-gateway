@@ -81,3 +81,48 @@ Verify on raw bytes, enforce a replay window. Envelope: `data.event_type`, `data
 - Element X / FluffyChat poll rendering (MSC3381 stable vs unstable event types).
 - Authenticated-media download path for appservices (`/_matrix/client/v1/media/download/...` with as_token
   is the expected path — inference until tested against this Synapse).
+
+## Round 2 (2026-10-14)
+
+### Telnyx keyword matching — VERIFIED (docs)
+
+developers.telnyx.com/docs/messaging/messages/configuration-and-usage: a keyword triggers only when the
+message contains **only** that word/phrase, **case-insensitive, surrounding whitespace ignored**. So
+"stop" / " STOP " trigger, "please stop" / "stop it" don't. **Unverified:** whether trailing punctuation
+("Stop!") counts. The bridge mirrors the documented rule exactly, so the two can't disagree on documented
+input. Watch the consent log for STOP-like messages without `autoresponse_type` during rollout.
+
+- YES is not in Telnyx's default keyword sets (defaults: STOP/STOPALL/STOP ALL/UNSUBSCRIBE/CANCEL/END/QUIT;
+  START/UNSTOP). It only becomes one if added to an autoresp config, which we don't do.
+- JOIN is not a Telnyx keyword either: it never lifts a block.
+- Discrepancy: one Telnyx page says sending to a blocked number gets HTTP **409**, the error-code
+  reference says code **40300**. The adapter treats either as "blocked".
+
+### Messaging profile API — VERIFIED (docs)
+
+`PATCH /v2/messaging_profiles/{id}` accepts `webhook_url`, `webhook_api_version: "2"`,
+`features.ai_opt_out_detection_enabled`, `daily_spend_limit(_enabled)`, `smart_encoding`.
+The docs' example response shows `ai_opt_out_detection_enabled: true`, so the setup script sets it to
+false explicitly rather than assuming the default.
+
+### bridgev2 `bridge` command — VERIFIED (source)
+
+mautrix/go `bridgev2/commands/managechat.go` (commit e7cf128, 2026-03-22; first tag v0.27.0, 2026-04-16).
+Plumbs an existing room to one remote chat ID, sets a default relay. See DECISIONS.md D1 for why it
+doesn't change the framework choice.
+
+### Synapse default encryption — VERIFIED (playbook source)
+
+`matrix_synapse_encryption_enabled_by_default_for_room_type: "off"` by default. Ghost-created DM rooms
+rely on this; DEPLOY.md step 0 checks it isn't overridden.
+
+### Still unverified (needs live traffic)
+
+- Whether Telnyx auto-replies to HELP with no HELP autoresp configured (test in DEPLOY.md §9).
+- `from.carrier` on inbound webhooks and `to[].carrier` on send responses (used for pacing classes;
+  falls back to strict "unknown" limits if absent).
+- Whether inbound MMS media URLs need auth (adapter tries without, then with the API key).
+- Poll event compatibility in FluffyChat (bot-created polls use unstable MSC3381 types by default;
+  the bridge reads both stable and unstable).
+- Docker image build: not built here (no Docker daemon in the build sandbox); `pip install .` in a clean
+  venv was verified.

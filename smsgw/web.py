@@ -1,0 +1,62 @@
+"""Public HTTP listener (behind the Cloudflare tunnel at sms-hook.*).
+
+Only three routes are exposed: the signed Telnyx webhook, short-lived media, and a health check.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Awaitable, Callable
+
+from aiohttp import web
+
+from .db import Database
+from .provider.base import Provider, SignatureError
+
+log = logging.getLogger("smsgw.web")
+
+MAX_WEBHOOK_BYTES = 256 * 1024
+
+
+def build_app(db: Database, provider: Provider, on_inbound: Callable[[], Awaitable[None] | None]) -> web.Application:
+    app = web.Application(client_max_size=MAX_WEBHOOK_BYTES)
+
+    async def webhook(request: web.Request) -> web.Response:
+        body = await request.read()
+        try:
+            provider.verify(body, request.headers)
+        except SignatureError as e:
+            log.warning("rejected webhook from %s: %s", request.remote, e)
+            return web.Response(status=401)
+        try:
+            evt = provider.parse(body)
+        except (ValueError, KeyError) as e:
+            log.warning("unparseable webhook: %s", e)
+            return web.Response(status=400)
+        if evt is None:
+            return web.Response(status=200)
+        # Persist first, process async: Telnyx gets a fast 200 and retries are deduped by key.
+        if await db.add_inbound(evt.key, evt.event_type, evt.raw):
+            res = on_inbound()
+            if res is not None:
+                await res
+        return web.Response(status=200)
+
+    async def media(request: web.Request) -> web.StreamResponse:
+        token = request.match_info["name"].split(".", 1)[0]
+        row = await db.get_media_token(token)
+        if row is None:
+            raise web.HTTPNotFound()
+        return web.FileResponse(
+            row["path"],
+            headers={"Content-Type": row["content_type"], "Cache-Control": "private, no-store",
+                     "X-Robots-Tag": "noindex"},
+        )
+
+    async def health(_: web.Request) -> web.Response:
+        return web.Response(text="ok")
+
+    app.router.add_post("/telnyx/webhook", webhook)
+    app.router.add_get("/m/{name}", media)
+    app.router.add_get("/healthz", health)
+    return app

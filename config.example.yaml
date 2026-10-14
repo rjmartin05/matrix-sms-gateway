@@ -1,0 +1,77 @@
+# Non-secret settings. Secrets go in .env (see .env.example).
+
+homeserver:
+  address: http://matrix-synapse:8008
+  domain: example.com
+
+appservice:
+  id: sms-gateway                  # must match registration.yaml
+  listen_host: 0.0.0.0
+  listen_port: 29340               # Synapse -> bridge, docker network only
+  bot_localpart: smsbot
+  bot_displayname: SMS Bridge
+  ghost_prefix: sms_               # @sms_15555551234:example.com
+  ghost_name_suffix: " (SMS)"
+
+public:
+  base_url: https://sms-hook.example.com
+  listen_host: 0.0.0.0
+  listen_port: 29341               # published on 127.0.0.1 for cloudflared
+  media_ttl_hours: 24              # MMS image URLs (Telnyx fetches at send time)
+  link_ttl_days: 7                 # video/file links texted to members
+
+storage:
+  database: /data/smsgw.db
+  media_dir: /data/media
+
+telnyx:
+  webhook_tolerance_seconds: 300
+
+compliance:
+  brand: Example Chat            # must match the 10DLC registration
+  contact_email: help@example.com
+
+rooms:
+  # PLACEHOLDER: replace the number with the Telnyx 10DLC number (E.164). Startup refuses "X".
+  - room: "#general:example.com"
+    number: "+1XXXXXXXXXX"
+
+matrix:
+  admin_power_level: 50            # room power level needed for !sms / !announce
+  admins: []                       # extra admin mxids, regardless of power level
+  alerts_room: null                # room ID/alias for bridge alerts; null = log only
+  failure_alert_threshold: 3
+  poll_style: unstable             # event types for bot-created polls (see docs/VERIFIED.md)
+
+sms:
+  reply_quote_format: "↩ {name}: {quote} "   # NOTE: ↩ and the ellipsis force UCS-2 (70-char segments)
+  reply_quote_chars: 20
+  image_max_px: 1200
+  image_max_bytes: 600000
+  inbound_media_max_bytes: 5000000
+
+pacing:
+  global_per_second: 1
+  max_attempts: 6
+  max_queue_age_hours: 12          # older unsent messages expire instead of arriving late
+  unknown_carrier_class: unknown   # carrier not learned yet -> strictest limits
+  carriers:
+    - name: att
+      match: ["at&t", "att mobility", "cingular"]
+      per_minute: 15
+    - name: tmobile
+      match: ["t-mobile", "tmobile", "metro"]
+      daily_segments: 1000         # brand-level daily cap (counted per UTC day)
+    - name: unknown
+      match: []
+      per_minute: 15
+
+pricing:                           # for !sms status estimates only
+  sms_part: 0.004
+  sms_carrier_fee: 0.004
+  mms_out: 0.015
+  mms_in: 0.005
+  mms_carrier_fee: 0.01
+
+logging:
+  level: INFO
