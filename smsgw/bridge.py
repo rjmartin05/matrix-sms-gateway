@@ -406,6 +406,12 @@ class Bridge:
                 target = row["source_key"][len("mx:"):]
                 break
         if target is None:
+            # Phones also let you react to your own sent texts; those quote the text without a name prefix.
+            for event_id, sent in await self.db.recent_own_posts(member.room_id, member.number, time.time() - REACTION_LOOKBACK):
+                if reactions.quote_matches(r.quote, sent):
+                    target = event_id
+                    break
+        if target is None:
             log.info("reaction text from %s didn't match a recent message; posting as text", member.number)
             return False
         target = await self._edit_target(member.room_id, target)
