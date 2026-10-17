@@ -39,7 +39,7 @@ def make_config(tmp_path) -> Config:
             CarrierClass("unknown", (), per_minute=15),
         ],
         max_attempts=3, max_queue_age_hours=12, failure_alert_threshold=3, pricing=Pricing(),
-        poll_style="unstable", reply_quote_format="↩ {name}: {quote} ", reply_quote_chars=20,
+        poll_style="unstable", reply_quote_format='Re {name}: "{quote}" ', reply_quote_chars=20,
         image_max_px=1200, image_max_bytes=600_000, inbound_media_max_bytes=5_000_000,
     )
 

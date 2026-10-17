@@ -17,7 +17,8 @@ def opt_in(brand: str) -> str:
 
 def opt_in_followup(brand: str) -> str:
     # Sent as a separate message after the registered opt-in text so that text stays unmodified.
-    return f"{brand}: To leave, text one word: STOP, CANCEL, END or QUIT. Text START to rejoin."
+    return (f"{brand}: To leave, text one word: STOP, CANCEL, END or QUIT. Text START to rejoin. "
+            "Commands start with #. Text HELP for the list.")
 
 
 def opt_out(brand: str) -> str:

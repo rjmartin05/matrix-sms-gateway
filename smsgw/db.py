@@ -142,6 +142,17 @@ CREATE TABLE IF NOT EXISTS usage (
     PRIMARY KEY (month, kind)
 );
 
+-- A #dm held for confirmation after a non-exact name match. One per (room, number); #yes sends it.
+CREATE TABLE IF NOT EXISTS pending_dms (
+    room_id TEXT NOT NULL,
+    number TEXT NOT NULL,
+    target_mxid TEXT NOT NULL,
+    target_name TEXT NOT NULL,
+    message TEXT NOT NULL,
+    expires_at REAL NOT NULL,
+    PRIMARY KEY (room_id, number)
+);
+
 -- Daily per-carrier-class segment counts (for caps like T-Mobile's).
 CREATE TABLE IF NOT EXISTS daily_segments (
     day TEXT NOT NULL,
@@ -513,6 +524,47 @@ class Database:
 
     async def delete_media_token(self, token: str) -> None:
         await self.execute("DELETE FROM media_tokens WHERE token=?", (token,))
+
+    # ---- pending DMs -----------------------------------------------------------------
+
+    async def set_pending_dm(self, room_id: str, number: str, target_mxid: str, target_name: str,
+                             message: str, ttl: float) -> None:
+        await self.execute(
+            "INSERT OR REPLACE INTO pending_dms (room_id, number, target_mxid, target_name, message, expires_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (room_id, number, target_mxid, target_name, message, time.time() + ttl),
+        )
+
+    async def get_pending_dm(self, room_id: str, number: str) -> aiosqlite.Row | None:
+        return await self.fetchone(
+            "SELECT * FROM pending_dms WHERE room_id=? AND number=? AND expires_at > ?",
+            (room_id, number, time.time()),
+        )
+
+    async def clear_pending_dm(self, room_id: str, number: str) -> None:
+        await self.execute("DELETE FROM pending_dms WHERE room_id=? AND number=?", (room_id, number))
+
+    # ---- daily spend -----------------------------------------------------------------
+
+    async def day_traffic(self, since: float) -> dict[str, int]:
+        """Today's billable traffic for spend estimates: outbound SMS segments / MMS count, inbound counts."""
+        out = await self.fetchone(
+            "SELECT COALESCE(SUM(CASE WHEN media_url IS NULL THEN parts ELSE 0 END), 0) AS sms_seg,"
+            " COALESCE(SUM(CASE WHEN media_url IS NOT NULL THEN 1 ELSE 0 END), 0) AS mms"
+            " FROM outbound WHERE status='sent' AND sent_at >= ?",
+            (since,),
+        )
+        inn = await self.fetchall(
+            "SELECT raw FROM inbound WHERE event_type='message.received' AND received_at >= ?", (since,)
+        )
+        sms_in = mms_in = 0
+        for r in inn:
+            payload = (json.loads(r["raw"]).get("data") or {}).get("payload") or {}
+            if payload.get("media"):
+                mms_in += 1
+            else:
+                sms_in += int(payload.get("parts") or 1)
+        return {"sms_seg": out["sms_seg"], "mms": out["mms"], "sms_in_seg": sms_in, "mms_in": mms_in}
 
     # ---- message map -----------------------------------------------------------------
 

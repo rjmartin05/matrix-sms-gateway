@@ -184,7 +184,7 @@ async def test_help_autoresponded_by_telnyx_no_double(env):
 
 async def test_help_unflagged_member_gets_command_list(env):
     await joined(env, DAVE, "Dave Miller")
-    await env.sms(DAVE, "?")
+    await env.sms(DAVE, "help")
     await env.sms(STRANGER, "help")
     await env.drain()
     assert texts_to(env, DAVE)[0].startswith("Example Chat commands:")
@@ -238,7 +238,7 @@ async def test_reply_and_edit_rendering(env):
         "m.relates_to": {"rel_type": "m.replace", "event_id": "$x"}}})
     await env.drain()
     assert texts_to(env, DAVE) == [
-        "Alice Cooper: ↩ Evan: Saturday at the par… I'm in",
+        'Alice Cooper: Re Evan: "Saturday at the p..." I\'m in',
         "Alice Cooper: (edited) I'm in!",
     ]
 
@@ -261,7 +261,7 @@ async def test_bang_commands_not_relayed(env):
 async def test_image_mms_and_photos_off(env):
     await joined(env, DAVE, "Dave Miller")
     await joined(env, SUE, "Sue")
-    await env.sms(SUE, "PHOTOS OFF")
+    await env.sms(SUE, "#photos off")
     await env.drain()
     env.provider.sent.clear()
     buf = io.BytesIO()
@@ -274,7 +274,7 @@ async def test_image_mms_and_photos_off(env):
     dave = [s for s in env.provider.sent if s["to"] == DAVE][0]
     sue = [s for s in env.provider.sent if s["to"] == SUE][0]
     assert dave["media_url"].startswith("https://hook.example.org/m/") and dave["text"] == "Alice:"
-    assert sue["media_url"] is None and sue["text"] == "[Alice sent a photo]"
+    assert sue["media_url"] is None and sue["text"] == "Alice sent a photo"
     row = await env.db.fetchone("SELECT path FROM media_tokens")
     with Image.open(row["path"]) as im:
         assert max(im.size) <= 1200 and im.format == "JPEG"
@@ -302,10 +302,10 @@ async def test_sms_mention_becomes_matrix_mention(env):
 async def test_who_and_dm_matrix_user(env):
     await joined(env, DAVE, "Dave Miller")
     env.port.rooms[ROOM][ALICE] = "Alice Cooper"
-    await env.sms(DAVE, "WHO")
+    await env.sms(DAVE, "#who")
     await env.drain()
     assert texts_to(env, DAVE)[-1] == "Members:\n1) Alice Cooper\n2) Dave Miller"
-    await env.sms(DAVE, "DM alice see you at 6")
+    await env.sms(DAVE, "#dm alice see you at 6")
     await env.drain()
     assert texts_to(env, DAVE)[-1] == "Sent to Alice Cooper"
     dm_room = await env.db.get_dm_room(env.port.ghost_mxid(DAVE), ALICE)
@@ -316,11 +316,11 @@ async def test_dm_ambiguous_and_none(env):
     await joined(env, DAVE, "Dave Miller")
     env.port.rooms[ROOM]["@d1:example.org"] = "Sam Smith"
     env.port.rooms[ROOM]["@d2:example.org"] = "Sam Jones"
-    await env.sms(DAVE, "DM sam hi")
-    await env.sms(DAVE, "DM bob hi")
+    await env.sms(DAVE, "#dm sam hi")
+    await env.sms(DAVE, "#dm bob hi")
     await env.drain()
-    assert texts_to(env, DAVE)[-2] == "Which sam? 2) Sam Jones 3) Sam Smith. Text DM 2 your message."
-    assert texts_to(env, DAVE)[-1] == "No member named bob. Text WHO for the list."
+    assert texts_to(env, DAVE)[-2] == "Which sam? 2) Sam Jones 3) Sam Smith. Reply #dm 2 or #dm 3 with your message"
+    assert texts_to(env, DAVE)[-1] == 'No member named "bob". Text #who for the list'
 
 
 async def test_matrix_dm_to_ghost_and_r_reply(env):
@@ -333,8 +333,8 @@ async def test_matrix_dm_to_ghost_and_r_reply(env):
     await env.matrix({"type": "m.room.message", "room_id": "!dmA:example.org", "sender": ALICE,
                       "content": {"msgtype": "m.text", "body": "you free?"}})
     await env.drain()
-    assert texts_to(env, DAVE)[-1] == "DM from Alice Cooper: you free? (reply: R msg)"
-    await env.sms(DAVE, "R yes after 5")
+    assert texts_to(env, DAVE)[-1] == "DM from Alice Cooper: you free? (reply: #r msg)"
+    await env.sms(DAVE, "#r yes after 5")
     assert env.port.sent[-1]["room_id"] == "!dmA:example.org"
     assert env.port.sent[-1]["content"]["body"] == "yes after 5"
 
@@ -353,25 +353,28 @@ async def test_encrypted_dm_invite_is_refused(env):
 async def test_sms_to_sms_dm(env):
     await joined(env, DAVE, "Dave Miller")
     await joined(env, SUE, "Sue Lee")
-    await env.sms(DAVE, "DM sue lunch?")
+    await env.sms(DAVE, "#dm sue lunch?")
     await env.drain()
     assert texts_to(env, SUE) == ["DM from Dave Miller: lunch?"]
-    await env.sms(SUE, "R sure")
+    await env.sms(SUE, "#r sure")
     await env.drain()
     assert texts_to(env, DAVE)[-2:] == ["Sent to Sue Lee", "DM from Sue Lee: sure"] or \
         "DM from Sue Lee: sure" in texts_to(env, DAVE)
 
 
-async def test_r_without_prior_dm_is_group_message(env):
+async def test_bare_r_is_group_message_and_prefixed_r_needs_a_dm(env):
     await joined(env, DAVE, "Dave Miller")
     await env.sms(DAVE, "r u coming")
     post = [e for e in env.port.sent if e["sender"] == env.port.ghost_mxid(DAVE)][-1]
     assert post["room_id"] == ROOM and post["content"]["body"] == "r u coming"
+    await env.sms(DAVE, "#r u coming")
+    await env.drain()
+    assert texts_to(env, DAVE)[-1].startswith("Nobody has sent you a DM yet.")
 
 
 async def test_name_command(env):
     await joined(env, DAVE, "Dave")
-    await env.sms(DAVE, "NAME Dave Miller")
+    await env.sms(DAVE, "#name Dave Miller")
     await env.drain()
     assert (await env.db.get_member(ROOM, DAVE)).display_name == "Dave Miller"
     assert env.port.displaynames[env.port.ghost_mxid(DAVE)] == "Dave Miller (SMS)"
@@ -388,23 +391,23 @@ async def test_poll_flow(env):
                                                       {"id": "s2", "org.matrix.msc1767.text": "Sunday"}]}}}
     await env.matrix(start)
     await env.drain()
-    assert texts_to(env, DAVE) == ["Example Chat poll from Alice: Saturday or Sunday? Reply VOTE 1 (Saturday), VOTE 2 (Sunday)."]
-    await env.sms(DAVE, "vote 2")
+    assert texts_to(env, DAVE) == ["Example Chat poll from Alice: Saturday or Sunday? Reply #vote 1 (Saturday), #vote 2 (Sunday)."]
+    await env.sms(DAVE, "#vote 2")
     resp = env.port.sent[-1]
     assert resp["type"] == "org.matrix.msc3381.poll.response"
     assert resp["content"]["org.matrix.msc3381.poll.response"]["answers"] == ["s2"]
     await env.matrix({"type": "org.matrix.msc3381.poll.response", "sender": ALICE, "content": {
         "m.relates_to": {"rel_type": "m.reference", "event_id": "$poll"},
         "org.matrix.msc3381.poll.response": {"answers": ["s2"]}}})
-    await env.sms(DAVE, "VOTE 5")
+    await env.sms(DAVE, "#VOTE 5")
     await env.matrix({"type": "org.matrix.msc3381.poll.end", "sender": ALICE, "content": {
         "m.relates_to": {"rel_type": "m.reference", "event_id": "$poll"}}})
     await env.drain()
     msgs = texts_to(env, DAVE)
     assert "Vote recorded: Sunday" in msgs
-    assert "Reply VOTE 1-2." in msgs
+    assert "Reply #vote 1 to #vote 2." in msgs
     assert msgs[-1] == "Example Chat poll results: Saturday or Sunday? Saturday 0, Sunday 2"
-    await env.sms(DAVE, "vote 1")
+    await env.sms(DAVE, "/vote 1")
     await env.drain()
     assert texts_to(env, DAVE)[-1] == "No open poll right now."
 
@@ -415,7 +418,7 @@ async def test_announce_with_poll(env):
     await env.matrix({"type": "m.room.message", "sender": ADMIN, "content": {"msgtype": "m.text",
                       "body": "!announce Saturday 9am. Who's in? | yes | no"}})
     await env.drain()
-    assert texts_to(env, DAVE) == ["ANNOUNCEMENT from Evan: Saturday 9am. Who's in? Reply VOTE 1 (yes), VOTE 2 (no)."]
+    assert texts_to(env, DAVE) == ["ANNOUNCEMENT from Evan: Saturday 9am. Who's in? Reply #vote 1 (yes), #vote 2 (no)."]
     ann = [e for e in env.port.sent if e["sender"] == env.port.bot_mxid and "ANNOUNCEMENT" in e["content"].get("body", "")][0]
     assert ann["content"]["m.mentions"]["room"] is True and ann["event_id"] in env.port.pinned
     assert (await env.db.latest_open_poll(ROOM))["question"] == "Saturday 9am. Who's in?"
@@ -583,3 +586,173 @@ async def test_inbox_retries_in_order_after_transient_failure(env, monkeypatch):
     await asyncio.wait_for(task, 5)
     await env.drain()
     assert sleeps and texts_to(env, DAVE) == ["Alice: msg 1", "Alice: msg 2"]
+
+
+# ---- v1 review: # syntax, name resolution, spend, normalization -----------------------
+
+def ghost_posts(env, number):
+    return [e for e in env.port.sent if e["sender"] == env.port.ghost_mxid(number)]
+
+
+async def test_bare_command_words_go_to_group(env):
+    await joined(env, DAVE, "Dave Miller")
+    for text in ("who", "vote 1", "photos off", "info", "?"):
+        await env.sms(DAVE, text)
+    await env.drain()
+    assert [e["content"]["body"] for e in ghost_posts(env, DAVE)] == ["who", "vote 1", "photos off", "info", "?"]
+    assert texts_to(env, DAVE) == []
+
+
+async def test_unknown_hash_command_replies_and_is_not_posted(env):
+    await joined(env, DAVE, "Dave Miller")
+    await env.sms(DAVE, "#tbt great day")
+    await env.drain()
+    assert texts_to(env, DAVE) == ["Unknown command. Text HELP for the list."]
+    assert ghost_posts(env, DAVE) == []
+
+
+async def test_hash_help_matches_bare_help(env):
+    await joined(env, DAVE, "Dave Miller")
+    await env.sms(DAVE, "#help")
+    await env.sms(DAVE, "HELP")
+    await env.drain()
+    a, b = texts_to(env, DAVE)
+    assert a == b and a.startswith("Example Chat commands:\n#vote 1") and "#yes" not in a
+
+
+async def setup_people(env):
+    await joined(env, DAVE, "Dave Miller")
+    env.port.rooms[ROOM][ALICE] = "Alice Cooper"
+    env.port.rooms[ROOM]["@d1:example.org"] = "Sam Smith"
+    env.port.rooms[ROOM]["@d2:example.org"] = "Sam Jones"
+
+
+async def test_fuzzy_dm_held_then_sent_with_yes(env):
+    await setup_people(env)
+    await env.sms(DAVE, "#dm Alcie see you at 6")
+    await env.drain()
+    assert texts_to(env, DAVE)[-1] == 'No exact match for "Alcie". Did you mean 1) Alice Cooper? Reply #yes to send'
+    assert await env.db.get_dm_room(env.port.ghost_mxid(DAVE), ALICE) is None  # nothing sent yet
+    await env.sms(DAVE, "HELP")
+    await env.drain()
+    assert "#yes - send your pending DM" in texts_to(env, DAVE)[-1]
+    await env.sms(DAVE, "#yes")
+    await env.drain()
+    dm_room = await env.db.get_dm_room(env.port.ghost_mxid(DAVE), ALICE)
+    assert env.port.sent[-1]["room_id"] == dm_room and env.port.sent[-1]["content"]["body"] == "see you at 6"
+    assert texts_to(env, DAVE)[-1] == "Sent to Alice Cooper"
+    await env.sms(DAVE, "#yes")
+    await env.drain()
+    assert texts_to(env, DAVE)[-1] == "Nothing to send."
+
+
+async def test_unique_partial_name_is_not_auto_sent(env):
+    await setup_people(env)
+    await env.sms(DAVE, "#dm ali hi")
+    await env.drain()
+    assert texts_to(env, DAVE)[-1].startswith('No exact match for "ali". Did you mean 1) Alice Cooper?')
+    assert await env.db.get_dm_room(env.port.ghost_mxid(DAVE), ALICE) is None
+
+
+async def test_new_dm_replaces_pending_and_pending_expires(env):
+    await setup_people(env)
+    await env.sms(DAVE, "#dm Alcie first message")
+    await env.sms(DAVE, "#dm sam hi")  # ambiguous: replaces (clears) the pending one
+    await env.sms(DAVE, "#yes")
+    await env.drain()
+    assert texts_to(env, DAVE)[-1] == "Nothing to send."
+    await env.sms(DAVE, "#dm Alcie second")
+    await env.db.execute("UPDATE pending_dms SET expires_at=0")
+    await env.sms(DAVE, "#yes")
+    await env.drain()
+    assert texts_to(env, DAVE)[-1] == "Nothing to send."
+    assert await env.db.get_dm_room(env.port.ghost_mxid(DAVE), ALICE) is None
+
+
+async def test_multiple_fuzzy_candidates_listed_no_pending(env):
+    await setup_people(env)
+    await env.sms(DAVE, "#dm sma hi")
+    await env.sms(DAVE, "#yes")
+    await env.drain()
+    msgs = texts_to(env, DAVE)
+    assert msgs[-2] == ('No exact match for "sma". Did you mean 3) Sam Jones 4) Sam Smith? '
+                        "Reply #dm 3 or #dm 4 with your message")
+    assert msgs[-1] == "Nothing to send."
+
+
+async def test_dm_by_who_number_and_self(env):
+    await setup_people(env)
+    await env.sms(DAVE, "#dm 1 by number")
+    await env.sms(DAVE, "#dm Dave Miller note to self")
+    await env.drain()
+    assert texts_to(env, DAVE)[-2] == "Sent to Alice Cooper"
+    assert texts_to(env, DAVE)[-1] == "That's you. Text #who for the list."
+
+
+async def test_ambiguous_mention_stays_plain(env):
+    await setup_people(env)
+    await env.sms(DAVE, "@sam and @Alice Cooper, see you")
+    post = ghost_posts(env, DAVE)[-1]
+    assert post["content"]["m.mentions"]["user_ids"] == [ALICE]
+    assert "@sam" in post["content"]["formatted_body"] and "@d1" not in post["content"]["formatted_body"]
+
+
+async def test_outbound_typography_normalized(env):
+    from smsgw.segments import count_segments
+    await joined(env, DAVE, "Dave Miller")
+    env.port.rooms[ROOM][ALICE] = "Alice"
+    await env.matrix({"type": "m.room.message", "sender": ALICE, "content": {
+        "msgtype": "m.text", "body": "Don’t forget — it’s “Saturday”… \U0001F389"}})
+    await env.drain()
+    sent = texts_to(env, DAVE)[0]
+    assert sent == "Alice: Don't forget - it's \"Saturday\"... \U0001F389"  # emoji untouched
+    await env.matrix({"type": "m.room.message", "sender": ALICE, "content": {
+        "msgtype": "m.text", "body": "It’s at 9… bring chairs — thanks!"}})
+    await env.drain()
+    assert count_segments(texts_to(env, DAVE)[1]).encoding == "GSM-7"
+
+
+async def test_spend_alert_once_at_60_percent(env):
+    await joined(env, DAVE, "Dave Miller")
+    env.cfg.pricing = env.cfg.pricing.__class__(daily_spend_limit=0.10)  # 60% = $0.06 ~ 8 SMS segments
+    env.port.rooms[ROOM][ALICE] = "Alice"
+    for i in range(12):
+        await env.matrix({"type": "m.room.message", "sender": ALICE, "content": {"msgtype": "m.text", "body": f"m{i}"}})
+        await env.drain()
+    alerts = [e["content"]["body"] for e in env.port.sent if e["room_id"] == "!alerts:example.org"]
+    spend = [a for a in alerts if "Estimated Telnyx spend today" in a]
+    assert len(spend) == 1 and "of the $0.10 daily limit" in spend[0]
+    assert "Today (UTC): est. $" in await env.bridge.status_text(ROOM)
+
+
+async def test_telnyx_spend_limit_holds_messages(env):
+    await joined(env, DAVE, "Dave Miller")
+    env.provider.fail_with = [SendError("spend_limit", "40333 Spend limit reached", "40333")]
+    await env.db.enqueue(source_key="s", room_id=ROOM, from_number=GROUP_NUMBER, to_number=DAVE, kind="group", text="hi")
+    await env.drain()
+    row = await env.db.fetchone("SELECT status, attempts, next_attempt_at FROM outbound WHERE source_key='s'")
+    assert row["status"] == "pending" and row["attempts"] == 0 and row["next_attempt_at"] > time.time() + 1000
+    alerts = [e["content"]["body"] for e in env.port.sent if e["room_id"] == "!alerts:example.org"]
+    assert any("spend limit reached" in a for a in alerts)
+
+
+async def test_no_brackets_in_photo_off_and_link_texts(env):
+    await joined(env, DAVE, "Dave Miller")
+    await env.sms(DAVE, "#photos off")
+    await env.drain()
+    env.port.rooms[ROOM][ALICE] = "Alice"
+    await env.matrix({"type": "m.room.message", "sender": ALICE, "content": {"msgtype": "m.image", "body": "x.jpg"}})
+    await env.matrix({"type": "m.room.message", "sender": ALICE, "content": {"msgtype": "m.video", "body": "v.mp4"}})
+    await env.drain()
+    for t in texts_to(env, DAVE):
+        assert not set(t) & set("[]{}"), t
+    assert texts_to(env, DAVE)[-2:] == ["Alice sent a photo", "Alice sent a video"]
+
+
+async def test_sender_does_not_count_toward_shared_first_name(env):
+    await joined(env, DAVE, "Dave Miller")
+    await joined(env, SUE, "Dave Smith")
+    await env.sms(DAVE, "#dm dave lunch?")
+    await env.drain()
+    assert texts_to(env, SUE) == ["DM from Dave Miller: lunch?"]
+    assert texts_to(env, DAVE)[-1] == "Sent to Dave Smith"

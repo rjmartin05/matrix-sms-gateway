@@ -7,6 +7,7 @@ Stdlib only.
 What it does (per decisions in docs/DECISIONS.md, D5):
   - webhook_url -> https://sms-hook.example.com/telnyx/webhook, webhook_api_version "2"
   - features.ai_opt_out_detection_enabled = false
+  - daily_spend_limit 15.00 enabled (D8; the bridge also alerts at ~60%), smart_encoding = false (D9)
   - autoresp_configs: STOP (registered opt-out text) and START (registered opt-in text), US only.
     YES/JOIN are NOT Telnyx keywords: the bridge owns JOIN, and "yes" is a normal group reply.
   - HELP autoresp only with --help-autoresp (use if live testing shows Telnyx double-replies to HELP).
@@ -59,7 +60,8 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true", help="actually make changes (default: dry run)")
     ap.add_argument("--webhook-url", default="https://sms-hook.example.com/telnyx/webhook")
     ap.add_argument("--help-autoresp", action="store_true")
-    ap.add_argument("--daily-spend-limit", help="e.g. 5.00 (USD); omitted = leave as is")
+    ap.add_argument("--daily-spend-limit", default="15.00",
+                    help="USD per day (D8, default 15.00). Keep pricing.daily_spend_limit in config.yaml equal.")
     args = ap.parse_args()
 
     key = os.environ.get("TELNYX_API_KEY")
@@ -79,10 +81,10 @@ def main() -> int:
         "webhook_url": args.webhook_url,
         "webhook_api_version": "2",
         "features": {"ai_opt_out_detection_enabled": False},
+        "smart_encoding": False,  # D9: the bridge normalizes typography itself; never rewrite member text
+        "daily_spend_limit": args.daily_spend_limit,
+        "daily_spend_limit_enabled": True,
     }
-    if args.daily_spend_limit:
-        patch["daily_spend_limit"] = args.daily_spend_limit
-        patch["daily_spend_limit_enabled"] = True
 
     configs = [
         {"op": "stop", "keywords": ["STOP"], "resp_text": OPT_OUT, "country_code": "US"},

@@ -52,7 +52,7 @@ class SendResult:
 
 
 class SendError(Exception):
-    """kind: blocked | rate_limited | transient | permanent"""
+    """kind: blocked | rate_limited | spend_limit | transient | permanent"""
 
     def __init__(self, kind: str, message: str, code: str | None = None, retry_after: float | None = None):
         super().__init__(message)

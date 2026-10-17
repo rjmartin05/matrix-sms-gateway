@@ -34,6 +34,8 @@ class Pricing:
     mms_out: float = 0.015
     mms_in: float = 0.005
     mms_carrier_fee: float = 0.01
+    daily_spend_limit: float = 15.0  # mirror of the Telnyx profile limit (D8); 0 disables the alert
+    daily_spend_alert_fraction: float = 0.6
 
 
 @dataclass
@@ -165,7 +167,7 @@ def load(path: str) -> Config:
         failure_alert_threshold=int(get("matrix", "failure_alert_threshold", 3)),
         pricing=pricing,
         poll_style=poll_style,
-        reply_quote_format=get("sms", "reply_quote_format", "↩ {name}: {quote} "),
+        reply_quote_format=get("sms", "reply_quote_format", 'Re {name}: "{quote}" '),
         reply_quote_chars=int(get("sms", "reply_quote_chars", 20)),
         image_max_px=int(get("sms", "image_max_px", 1200)),
         image_max_bytes=int(get("sms", "image_max_bytes", 600_000)),

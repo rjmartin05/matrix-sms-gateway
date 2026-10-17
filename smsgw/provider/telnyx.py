@@ -34,6 +34,7 @@ log = logging.getLogger("smsgw.telnyx")
 
 API_BASE = "https://api.telnyx.com/v2"
 BLOCKED_CODES = {"40300"}
+SPEND_LIMIT_CODES = {"40333"}  # "Spend limit reached" (messaging error-code reference)
 FAILED_STATUSES = {"delivery_failed", "sending_failed"}
 
 
@@ -167,6 +168,8 @@ class TelnyxProvider:
         msg = f"HTTP {status} {code or ''} {detail}".strip()
         if code in BLOCKED_CODES or status == 409:
             raise SendError("blocked", msg, code)
+        if code in SPEND_LIMIT_CODES:
+            raise SendError("spend_limit", msg, code)
         if status == 429:
             ra = float(retry_after) if retry_after and retry_after.isdigit() else None
             raise SendError("rate_limited", msg, code, ra)

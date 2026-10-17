@@ -126,3 +126,18 @@ rely on this; DEPLOY.md step 0 checks it isn't overridden.
   the bridge reads both stable and unstable).
 - Docker image build: not built here (no Docker daemon in the build sandbox); `pip install .` in a clean
   venv was verified.
+
+## Round 3 (2026-10-17)
+
+- **GitHub SSH host key — VERIFIED** (docs.github.com, "GitHub's SSH key fingerprints"): Ed25519
+  `SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU`; the `known_hosts` line in DEPLOY.md §1c is copied
+  from that page.
+- **Telnyx spend limit error — VERIFIED (docs excerpt):** the messaging error-code reference lists
+  `40333` "Spend limit reached". The adapter maps it to a hold, not a retry storm.
+- **Telnyx daily spend limit semantics — UNVERIFIED:** when the day resets (the bridge assumes UTC) and
+  whether inbound and carrier fees count toward it. The bridge's 60% alert is an estimate from configured
+  rates.
+- **Cloudflare dashboard field labels — INFERENCE:** "Published application routes" is your term; the
+  field names in DEPLOY.md §6 are from memory.
+- **Damerau-Levenshtein thresholds** (≤1 for ≤4-letter names, ≤2 otherwise) are my choice, tuned by the
+  tests, not taken from any source.
