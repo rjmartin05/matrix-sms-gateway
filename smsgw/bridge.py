@@ -16,7 +16,7 @@ import re
 import time
 from dataclasses import dataclass
 
-from . import commands, compliance, names
+from . import commands, compliance, names, reactions
 from .config import Config
 from .db import Database, Member, day_key
 from .media import MediaStore, resize_to_jpeg
@@ -34,6 +34,7 @@ MAX_INBOUND_TEXT = 4000
 MAX_LINK_MEDIA_BYTES = 50 * 1024 * 1024
 ALERT_DEBOUNCE = 3600
 PENDING_DM_TTL = 600  # seconds a non-exact #dm waits for #yes
+REACTION_LOOKBACK = 7 * 86400  # how far back a reaction text's quote is matched
 
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _FILENAME_RE = re.compile(r"^[\w\-. ]+\.(jpe?g|png|gif|heic|webp|mp4|mov|bmp|tiff?)$", re.IGNORECASE)
@@ -383,6 +384,8 @@ class Bridge:
             log.info("ignoring message from %s (status %s)", number, member.status if member else "unknown")
             return
 
+        if not msg.media and text and await self._try_reaction(member, text, msg.provider_id):
+            return
         if cmd is not None and cmd.error:
             await self.reply_sms(room_id, number, cmd.error, src)
             return
@@ -391,6 +394,46 @@ class Bridge:
             if handled:
                 return
         await self._post_to_group(member, msg, text)
+
+    async def _try_reaction(self, member: Member, text: str, provider_id: str) -> bool:
+        """Turn a phone reaction text into a Matrix reaction. False = not a reaction we can place."""
+        r = reactions.parse(text)
+        if r is None:
+            return False
+        target = None
+        for row in await self.db.recent_group_texts(member.room_id, member.number, time.time() - REACTION_LOOKBACK):
+            if reactions.quote_matches(r.quote, row["text"]):
+                target = row["source_key"][len("mx:"):]
+                break
+        if target is None:
+            log.info("reaction text from %s didn't match a recent message; posting as text", member.number)
+            return False
+        target = await self._edit_target(member.room_id, target)
+        ghost = self.mx.ghost_mxid(member.number)
+        try:
+            if r.remove:
+                reaction_id = await self.db.pop_reaction(member.room_id, member.number, target, r.key)
+                if reaction_id:
+                    await self.mx.redact(member.room_id, ghost, reaction_id)
+            else:
+                reaction_id = await self.mx.send_reaction(member.room_id, ghost, target, r.key, txn_id=f"react-{provider_id}")
+                await self.db.save_reaction(member.room_id, member.number, target, r.key, reaction_id)
+        except Exception as e:
+            # e.g. the same reaction twice (M_DUPLICATE_ANNOTATION) or a redacted target. Dropping a
+            # reaction is better than posting the raw "👍 to “…”" text or retrying forever.
+            log.warning("reaction from %s on %s not applied: %s", member.number, target, e)
+        return True
+
+    async def _edit_target(self, room_id: str, event_id: str) -> str:
+        """An edit (m.replace) went out as its own text; react to the original message instead."""
+        try:
+            evt = await self.mx.get_event(room_id, event_id)
+        except Exception:
+            return event_id
+        rel = ((evt or {}).get("content") or {}).get("m.relates_to") or {}
+        if rel.get("rel_type") == "m.replace" and rel.get("event_id"):
+            return rel["event_id"]
+        return event_id
 
     async def _handle_autoresponse(self, msg: InboundMessage, room_id: str, number: str, member: Member | None, text: str) -> None:
         kind = msg.autoresponse_type.upper()

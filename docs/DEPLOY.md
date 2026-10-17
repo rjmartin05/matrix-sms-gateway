@@ -228,6 +228,7 @@ Then from that phone, in order:
 | `INFO` | same command list as HELP (exactly one reply) |
 | `#dm <misspelled name> test` | "No exact match … Reply #yes to send"; then `#yes` → "Sent to …" |
 | `#vote 1` (after a Matrix poll), a photo both ways | as described in BRIEF.md §6 |
+| react 👍 to a group text on your phone | a 👍 reaction on that message in the room, not a new message |
 | `STOP` | exactly one reply (the registered opt-out text); ghost leaves the room |
 | `JOIN` | no reply (Telnyx block holds until START) |
 | `START` | registered opt-in text once; ghost rejoins |

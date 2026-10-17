@@ -57,6 +57,7 @@ class FakePort:
         self.media: dict[str, bytes] = {}
         self._ids = itertools.count(1)
         self.pinned: list[str] = []
+        self.redacted: list[tuple[str, str]] = []
 
     def ghost_mxid(self, number: str) -> str:
         return f"@sms_{number.lstrip('+')}:{DOMAIN}"
@@ -111,6 +112,13 @@ class FakePort:
         return self._new_event(room_id, sender, "org.matrix.msc3381.poll.response",
                                {"m.relates_to": {"rel_type": "m.reference", "event_id": poll_event_id},
                                 "org.matrix.msc3381.poll.response": {"answers": [answer_id]}})
+
+    async def send_reaction(self, room_id, sender, event_id, key, *, txn_id=None) -> str:
+        return self._new_event(room_id, sender, "m.reaction",
+                               {"m.relates_to": {"rel_type": "m.annotation", "event_id": event_id, "key": key}})
+
+    async def redact(self, room_id, sender, event_id) -> None:
+        self.redacted.append((sender, event_id))
 
     async def joined_members(self, room_id: str) -> dict[str, str]:
         return dict(self.rooms.get(room_id, {}))
