@@ -113,7 +113,9 @@ class MautrixPort:
     async def join(self, room_id: str, mxid: str) -> None:
         intent = self.intent(mxid)
         if mxid == self.bot_mxid:
-            await intent.join_room(RoomID(room_id))
+            # No retries: mautrix's default (4, ~100 s total) stalls startup when the bot isn't
+            # invited yet. Bridge.start() logs and continues; the bot joins on invite instead.
+            await intent.join_room(RoomID(room_id), max_retries=0)
             return
         await intent.ensure_registered()
         await intent.ensure_joined(RoomID(room_id))
@@ -233,8 +235,14 @@ class MautrixPort:
         return mxid[1:].split(":", 1)[0]
 
     async def power_level(self, room_id: str, mxid: str) -> int:
-        pl = await self.az.intent.get_power_levels(RoomID(room_id), ignore_cache=True)
-        return pl.get_user_level(UserID(mxid))
+        # Room v12+: creators have implicit unlimited power and aren't listed in m.room.power_levels,
+        # so the create event must be passed in or the creator reads as users_default (0).
+        state = await self.az.intent.get_state(RoomID(room_id))
+        create = next((e for e in state if e.type == EventType.ROOM_CREATE), None)
+        pl = next((e.content for e in state if e.type == EventType.ROOM_POWER_LEVELS), None)
+        if pl is None:
+            return 100 if create is not None and create.sender == mxid else 0
+        return pl.get_user_level(UserID(mxid), create)
 
     async def get_event(self, room_id: str, event_id: str) -> dict | None:
         ev = await self.az.intent.get_event(RoomID(room_id), event_id)
