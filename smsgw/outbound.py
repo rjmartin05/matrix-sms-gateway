@@ -20,6 +20,7 @@ from typing import Awaitable, Callable
 from .config import CarrierClass, Config
 from .db import Database
 from .provider.base import Provider, SendError
+from .segments import normalize_typography
 
 log = logging.getLogger("smsgw.outbound")
 
@@ -82,6 +83,7 @@ class OutboundQueue:
         *,
         on_alert: Callable[[str, str], Awaitable[None]] | None = None,
         on_blocked: Callable[[str, str], Awaitable[None]] | None = None,
+        on_sent: Callable[[], Awaitable[None]] | None = None,
         estimate_segments: Callable[[str], int] | None = None,
     ) -> None:
         self.cfg = cfg
@@ -91,6 +93,7 @@ class OutboundQueue:
         self.wakeup = asyncio.Event()
         self.on_alert = on_alert
         self.on_blocked = on_blocked
+        self.on_sent = on_sent
         self.estimate_segments = estimate_segments or (lambda _t: 1)
         self._consecutive_network_errors = 0
         self._daily_cap_alerted: set[str] = set()
@@ -171,7 +174,7 @@ class OutboundQueue:
                 await self.db.update_outbound(row["id"], status="skipped", error=why)
                 continue
             cls = classify_carrier(row["carrier"], self.cfg.carrier_classes, self.cfg.unknown_carrier_class)
-            seg_est = 1 if row["media_url"] else self.estimate_segments(row["text"])
+            seg_est = 1 if row["media_url"] else self.estimate_segments(normalize_typography(row["text"]))
             allowed, reason = await self.limiter.allowed(cls, seg_est)
             if not allowed:
                 if reason == "daily_cap" and cls not in self._daily_cap_alerted:
@@ -189,7 +192,7 @@ class OutboundQueue:
             res = await self.provider.send(
                 from_number=row["from_number"],
                 to_number=row["to_number"],
-                text=row["text"],
+                text=normalize_typography(row["text"]),  # D9: bridge-side, Telnyx smart_encoding stays off
                 media_url=row["media_url"],
             )
         except SendError as e:
@@ -212,6 +215,11 @@ class OutboundQueue:
         real_cls = classify_carrier(carrier, self.cfg.carrier_classes, self.cfg.unknown_carrier_class)
         await self.limiter.record(real_cls, res.parts)
         await self.db.add_usage("mms_out" if row["media_url"] else "sms_out", res.parts)
+        if self.on_sent:
+            try:
+                await self.on_sent()
+            except Exception:
+                log.exception("on_sent hook failed")
 
     async def _handle_error(self, row, attempts: int, e: SendError) -> None:
         log.warning("send %s to %s failed (%s): %s", row["id"], row["to_number"], e.kind, e)
@@ -220,6 +228,14 @@ class OutboundQueue:
             await self.db.update_outbound(row["id"], status="blocked", error=str(e))
             if self.on_blocked:
                 await self.on_blocked(row["to_number"], str(e))
+            return
+        if e.kind == "spend_limit":
+            # Telnyx's daily spend cap: hold (old messages expire per max_queue_age_hours) and alert.
+            self._consecutive_network_errors = 0
+            await self.db.update_outbound(
+                row["id"], status="pending", attempts=attempts - 1, next_attempt_at=time.time() + 1800, error=str(e)
+            )
+            await self._alert("spend_limit", "Telnyx daily spend limit reached; texts are on hold.")
             return
         if e.kind == "permanent":
             self._consecutive_network_errors = 0

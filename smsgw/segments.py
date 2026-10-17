@@ -20,6 +20,34 @@ class SegmentInfo:
     segments: int
 
 
+# Typographic characters (mostly from phone "smart punctuation") that force UCS-2 but have an obvious
+# GSM-7 equivalent. Emoji and real non-Latin text are left alone: they genuinely need UCS-2.
+_TYPOGRAPHY = {
+    "‘": "'", "’": "'", "‚": "'", "‛": "'", "′": "'", "´": "'", "ʼ": "'",
+    "“": '"', "”": '"', "„": '"', "‟": '"', "″": '"', "«": '"', "»": '"',
+    "‹": "<", "›": ">",
+    "‐": "-", "‑": "-", "‒": "-", "–": "-", "—": "-", "―": "-", "−": "-",
+    "…": "...",
+    "•": "-", "·": "-",
+    "⁄": "/",
+    " ": " ", " ": " ", " ": " ", " ": " ", " ": " ", " ": " ", " ": " ",
+    "​": "", "‌": "", "‍": "", "⁠": "", "﻿": "",
+}
+_TYPOGRAPHY_TABLE = str.maketrans(_TYPOGRAPHY)
+
+
+def normalize_typography(text: str) -> str:
+    """Map smart quotes, dashes, ellipses and odd spaces to GSM-7 so plain text stays 160-char segments.
+
+    Zero-width joiners are only stripped when the text has no emoji, since ZWJ glues emoji sequences
+    (family, skin-tone, flag combos) together.
+    """
+    if any(ord(c) >= 0x1F000 or 0x2600 <= ord(c) <= 0x27BF for c in text):
+        table = {k: v for k, v in _TYPOGRAPHY_TABLE.items() if k != ord("‍")}
+        return text.translate(table)
+    return text.translate(_TYPOGRAPHY_TABLE)
+
+
 def is_gsm7(text: str) -> bool:
     return all(c in GSM7_BASIC or c in GSM7_EXT for c in text)
 

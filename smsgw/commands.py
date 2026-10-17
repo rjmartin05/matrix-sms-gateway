@@ -1,135 +1,141 @@
 """Inbound SMS command parsing.
 
-Every command has a strict *shape*. Text whose first word looks like a command but doesn't fit the
-shape is treated as a normal group message ("Who is driving?" is not WHO, "vote for pizza" is not
-VOTE). Opt-in/out/help keywords match Telnyx's rule: the whole message, case-insensitive, surrounding
-whitespace ignored (developers.telnyx.com/docs/messaging/messages/configuration-and-usage).
+Two kinds of input are special; everything else is a normal group message:
 
-"YES" is deliberately NOT a command: in a group chat it's a normal reply.
+1. Carrier/registered keywords, only when they are the *entire* message (case-insensitive, surrounding
+   whitespace ignored, same rule Telnyx uses: developers.telnyx.com/docs/messaging/messages/
+   configuration-and-usage): STOP-family, START/UNSTOP, HELP, JOIN.
+2. Member commands with a "#" prefix ("/" accepted as an alias): #vote, #dm, #r, #who, #name,
+   #photos, #help, #yes. An unknown "#word" gets "Unknown command. Text HELP for the list."
+
+"#" followed by a non-letter ("#1 fan", "# of people") is a normal message.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Callable
 
-# Telnyx's default opt-out / opt-in keyword sets (advanced-opt-in-out docs).
+# Telnyx's default opt-out set (advanced-opt-in-out docs). STOPALL / STOP ALL are Telnyx keywords too:
+# Telnyx blocks on them, so the bridge must treat them as opt-outs rather than post them to the group.
 OPT_OUT_KEYWORDS = frozenset({"STOP", "STOPALL", "STOP ALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"})
 OPT_IN_KEYWORDS = frozenset({"START", "UNSTOP"})
-HELP_KEYWORDS = frozenset({"HELP", "INFO", "?", "COMMANDS"})
+HELP_KEYWORDS = frozenset({"HELP"})
+JOIN_KEYWORDS = frozenset({"JOIN"})
 
 NAME_MAX_LEN = 40
-_NAME_RE = re.compile(r"^[^\W\d_][\w.'\- ]*$", re.UNICODE)
+UNKNOWN = "Unknown command. Text HELP for the list."
+
+_PREFIX_RE = re.compile(r"^\s*[#/]([A-Za-z]+)(.*)$", re.DOTALL)  # "#vote1" works too
 
 
 @dataclass(frozen=True)
 class Parsed:
     name: str
     args: dict = field(default_factory=dict)
-    error: str | None = None  # set when the shape is a command but unusable (reply with it)
-
-
-@dataclass(frozen=True)
-class Command:
-    name: str
-    parse: Callable[[str, str], Parsed | None]  # (normalized_upper, original) -> Parsed | None
-    help_line: str | None = None
+    error: str | None = None  # reply with this instead of acting
 
 
 def _norm(text: str) -> str:
     return " ".join(text.split()).upper()
 
 
-def _exact(name: str, keywords: frozenset[str]) -> Callable[[str, str], Parsed | None]:
-    def parse(up: str, _orig: str) -> Parsed | None:
-        return Parsed(name) if up in keywords else None
+def _rest(raw: str) -> str:
+    return " ".join(raw.split())
+
+
+def _vote(rest: str) -> Parsed:
+    m = re.fullmatch(r"#?\s*(\d{1,2})", rest)
+    if not m:
+        return Parsed("VOTE", error="Reply #vote and a number, like #vote 1.")
+    return Parsed("VOTE", {"choice": int(m.group(1))})
+
+
+def _dm(rest: str) -> Parsed:
+    if len(rest.split()) < 2:
+        return Parsed("DM", error="Text #dm name your message. Text #who for the list.")
+    return Parsed("DM", {"rest": rest})
+
+
+def _reply(rest: str) -> Parsed:
+    if not rest:
+        return Parsed("R", error="Text #r and your message.")
+    return Parsed("R", {"text": rest})
+
+
+def _name(rest: str) -> Parsed:
+    if not rest:
+        return Parsed("NAME", error="Text #name and your name, like #name Dave Miller.")
+    if len(rest) > NAME_MAX_LEN:
+        return Parsed("NAME", error=f"Names can be up to {NAME_MAX_LEN} characters.")
+    return Parsed("NAME", {"name": rest})
+
+
+def _photos(rest: str) -> Parsed:
+    v = rest.upper()
+    if v in ("ON", "OFF"):
+        return Parsed("PHOTOS", {"on": v == "ON"})
+    return Parsed("PHOTOS", error="Text #photos off or #photos on.")
+
+
+def _bare(name: str):
+    def parse(rest: str) -> Parsed:
+        return Parsed(name) if not rest else Parsed(name, error=UNKNOWN)
 
     return parse
 
 
-_VOTE_RE = re.compile(r"^VOTE\s*#?\s*(\d{1,2})$")
-
-
-def _parse_vote(up: str, _orig: str) -> Parsed | None:
-    m = _VOTE_RE.match(up)
-    return Parsed("VOTE", {"choice": int(m.group(1))}) if m else None
-
-
-def _rest_after(word: str, orig: str) -> str | None:
-    m = re.match(rf"^\s*{word}\s+(.*\S)\s*$", orig, re.IGNORECASE | re.DOTALL)
-    return m.group(1) if m else None
-
-
-def _parse_dm(up: str, orig: str) -> Parsed | None:
-    if up == "DM":
-        return Parsed("DM", error="Text DM name your message. Text WHO for the list.")
-    rest = _rest_after("DM", orig)
-    if rest is None:
-        return None
-    words = rest.split()
-    if len(words) < 2:
-        return Parsed("DM", error="Text DM name your message. Text WHO for the list.")
-    return Parsed("DM", {"rest": rest})
-
-
-def _parse_reply(up: str, orig: str) -> Parsed | None:
-    rest = _rest_after("R", orig)
-    return Parsed("R", {"text": rest}) if rest is not None else None
-
-
-def _parse_name(up: str, orig: str) -> Parsed | None:
-    rest = _rest_after("NAME", orig)
-    if rest is None:
-        return None
-    rest = " ".join(rest.split())
-    # Keep this strict so "name the place" style chatter still reaches the group.
-    if len(rest) > NAME_MAX_LEN or len(rest.split()) > 4 or not _NAME_RE.match(rest):
-        return None
-    return Parsed("NAME", {"name": rest})
-
-
-def _parse_photos(up: str, _orig: str) -> Parsed | None:
-    if up in ("PHOTOS OFF", "PHOTO OFF"):
-        return Parsed("PHOTOS", {"on": False})
-    if up in ("PHOTOS ON", "PHOTO ON"):
-        return Parsed("PHOTOS", {"on": True})
-    return None
-
-
-# Order matters: first match wins, and help lines render in this order.
-REGISTRY: list[Command] = [
-    Command("STOP", _exact("STOP", OPT_OUT_KEYWORDS)),
-    Command("START", _exact("START", OPT_IN_KEYWORDS)),
-    Command("JOIN", _exact("JOIN", frozenset({"JOIN"}))),
-    Command("HELP", _exact("HELP", HELP_KEYWORDS)),
-    Command("VOTE", _parse_vote, "VOTE 1 - answer latest poll"),
-    Command("DM", _parse_dm, "DM name msg - private message"),
-    Command("R", _parse_reply, "R msg - reply to last DM"),
-    Command("WHO", _exact("WHO", frozenset({"WHO"})), "WHO - list members"),
-    Command("NAME", _parse_name, "NAME Dave Miller - set your name"),
-    Command("PHOTOS", _parse_photos, "PHOTOS OFF/ON"),
-]
+# Prefixed member commands. Order is the HELP order.
+PREFIXED = {
+    "VOTE": _vote,
+    "DM": _dm,
+    "R": _reply,
+    "WHO": _bare("WHO"),
+    "NAME": _name,
+    "PHOTOS": _photos,
+    "HELP": _bare("HELP"),
+    "YES": _bare("YES"),
+}
 
 HELP_HEADER = "Messaging Chat commands:"
-HELP_FOOTER = "STOP - leave, START - rejoin"
+HELP_LINES = [
+    "#vote 1 - answer latest poll",
+    "#dm name msg - private message",
+    "#r msg - reply to last DM",
+    "#who - list members",
+    "#name Dave Miller - set your name",
+    "#photos off / #photos on",
+    "STOP - leave, START - rejoin",
+]
+YES_HELP_LINE = "#yes - send your pending DM"
 
 
-def help_text(contact_email: str) -> str:
-    lines = [HELP_HEADER]
-    lines += [c.help_line for c in REGISTRY if c.help_line]
-    lines.append(HELP_FOOTER)
+def help_text(contact_email: str, *, dm_pending: bool = False) -> str:
+    lines = [HELP_HEADER, *HELP_LINES]
+    if dm_pending:
+        lines.insert(3, YES_HELP_LINE)  # right after the #dm line
     lines.append(f"Questions: {contact_email}")
     return "\n".join(lines)
 
 
 def parse(text: str) -> Parsed | None:
-    """Return the parsed command, or None if this is a normal group message."""
+    """Return the parsed command/keyword, or None if this is a normal group message."""
     up = _norm(text)
     if not up:
         return None
-    for cmd in REGISTRY:
-        result = cmd.parse(up, text)
-        if result is not None:
-            return result
-    return None
+    if up in OPT_OUT_KEYWORDS:
+        return Parsed("STOP")
+    if up in OPT_IN_KEYWORDS:
+        return Parsed("START")
+    if up in HELP_KEYWORDS:
+        return Parsed("HELP")
+    if up in JOIN_KEYWORDS:
+        return Parsed("JOIN")
+    m = _PREFIX_RE.match(text)
+    if not m:
+        return None
+    word = m.group(1).upper()
+    handler = PREFIXED.get(word)
+    if handler is None:
+        return Parsed("UNKNOWN", error=UNKNOWN)
+    return handler(_rest(m.group(2)))

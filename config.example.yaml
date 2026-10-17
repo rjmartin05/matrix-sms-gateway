@@ -44,7 +44,7 @@ matrix:
   poll_style: unstable             # event types for bot-created polls (see docs/VERIFIED.md)
 
 sms:
-  reply_quote_format: "↩ {name}: {quote} "   # NOTE: ↩ and the ellipsis force UCS-2 (70-char segments)
+  reply_quote_format: 'Re {name}: "{quote}" '   # D7: keep GSM-7 only (a non-GSM char forces 70-char segments)
   reply_quote_chars: 20
   image_max_px: 1200
   image_max_bytes: 600000
@@ -66,12 +66,14 @@ pacing:
       match: []
       per_minute: 15
 
-pricing:                           # for !sms status estimates only
+pricing:                           # for !sms status estimates and the spend alert
   sms_part: 0.004
   sms_carrier_fee: 0.004
   mms_out: 0.015
   mms_in: 0.005
   mms_carrier_fee: 0.01
+  daily_spend_limit: 15.00         # keep equal to the Telnyx profile's daily_spend_limit (D8)
+  daily_spend_alert_fraction: 0.6  # alert in matrix.alerts_room at ~60% of the limit (estimated, UTC day)
 
 logging:
   level: INFO

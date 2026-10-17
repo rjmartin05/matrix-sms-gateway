@@ -15,48 +15,96 @@
 - **D5 Opt-in/out:**
   - Telnyx handles STOP/START blocking and replies (autoresp_configs with registered wording,
     `scripts/telnyx_setup.py`). HELP autoresp only if live test shows a double reply.
-  - YES is not a Telnyx keyword and not a bridge command.
+  - YES is not a Telnyx keyword, and bare "yes" is a normal group message.
   - Bridge owns JOIN (allowlist-checked) and the full HELP list, and logs every consent event,
     including Telnyx autoresponse webhooks.
   - START re-subscribes only numbers that previously JOINed and are still allowlisted.
   - AI opt-out detection is off.
-  - The opt-out reminder ("text one word: STOP, CANCEL, END or QUIT…") goes out as a separate
-    message right after the unmodified registered opt-in text.
+  - The opt-out reminder goes out as a separate message right after the unmodified registered opt-in text.
 - **D6 Repo:** `matrix-sms-gateway`, private.
 
-## Implementation choices made without asking (low-stakes; say if you want any changed)
+## Decided (2026-10-17, v1 review)
 
-- **Command shapes are strict.** Text that starts like a command but doesn't fit is a normal group message:
-  "Who is driving?" isn't WHO; "vote for pizza" isn't VOTE.
-  Known ambiguities that remain:
-  - `NAME <2–4 words>` is always NAME ("name the place" renames you; the reply says so).
-  - `R <text>` goes to your last DM sender once someone has DMed you ("r u coming" included).
-    Before that, it posts to the group.
-- **DM ambiguity numbers are the WHO numbers**, not 1..n, so `DM 4 msg` means the same thing everywhere
-  (brief's example showed 1/2).
-- **Allowlisted-but-not-joined and unknown numbers:** only JOIN/HELP/STOP/START get a response; anything
-  else is ignored and logged (most conservative compliance-wise).
-- **Ghosts leave the room on STOP/remove and rejoin on START/JOIN**, so Matrix members can see who's reachable.
-- **Encrypted DMs to a ghost** (FluffyChat/Element X may default to E2EE) are refused with a notice.
-  Workaround command `!dm Name` makes the ghost open an unencrypted DM with you.
-- **Poll/announcement SMS use the sender's first name** ("poll from Dave"), group messages use the full
-  display name ("Dave Miller: …"), matching the brief's examples.
-- **Matrix → SMS bodies are capped at 800 chars** (~6 segments) with "(more in the app)".
-- **Only members of the group room** can DM SMS members (by inviting a ghost or with `!dm`).
-- **Inbox failures retry in order with backoff** (e.g. while Synapse restarts during a playbook run); after
-  8 attempts the event is parked and an alert is raised.
-- **Queue:** messages older than 12 h expire instead of arriving late. A daily cap (T-Mobile) holds
-  messages and alerts. Carrier is learned from Telnyx; unknown carriers get the strictest
-  (AT&T-like) per-minute limit.
+- **D7 Reply quotes:** `Re Dave: "Saturday?..." ` (GSM-7 only). Default `sms.reply_quote_format`.
+- **D8 Spend:** Telnyx daily spend limit **$15**, set on the messaging profile by `scripts/telnyx_setup.py`.
+  The bridge posts one alert per UTC day to `matrix.alerts_room` when *estimated* spend reaches ~60%
+  (`pricing.daily_spend_alert_fraction`). If Telnyx refuses a send for the spend limit (error 40333),
+  the queue holds messages (they still expire at 12 h) and alerts.
+- **D9 Encoding:** Telnyx `smart_encoding` stays **off**; the setup script sets it false explicitly.
+  The bridge maps typographic characters to GSM-7 before counting segments and sending
+  (`segments.normalize_typography`):
+  - curly quotes → `'` `"`
+  - dashes → `-`
+  - `…` → `...`
+  - bullets, odd spaces, zero-width characters
+
+  Emoji and real non-Latin text are untouched. Outbound only; what members post into Matrix is not altered.
+- **D10 Command syntax:**
+  - **Member commands need a `#` prefix (`/` also works), any case:** `#vote n`, `#dm`, `#r`, `#who`,
+    `#name`, `#photos on|off`, `#help`, `#yes`.
+  - **Bare text is always a group message**, except these, when they are the whole message:
+    - STOP family: STOP, STOPALL, STOP ALL, UNSUBSCRIBE, CANCEL, END, QUIT
+    - START, UNSTOP, HELP, JOIN
+  - **An unknown `#word`** gets "Unknown command. Text HELP for the list." and is not posted.
+  - **A prefixed command with bad arguments** gets a usage line and is not posted. Examples: `#vote two`,
+    `#dm dave` with no message, `#photos maybe`, `#who is here`.
+  - **`#` followed by a non-letter is a normal message** ("#1 fan", "# of people").
+  - **System texts are GSM-7 basic with no brackets.** A test enforces this for every fixed system text.
+- **D11 DM name resolution** (`names.resolve_dm`):
+  - **Auto-send only on an exact match:**
+    - full display name
+    - a first name only one member has
+    - username
+    - WHO number
+
+    Case-insensitive; the longest exact match wins the name/message split.
+  - **Several exact matches** →
+    `Which Dave? 4) Dave Miller 9) Dave Smith. Reply #dm 4 or #dm 9 with your message`. Nothing sent.
+  - **Otherwise, suggestions only, never auto-sent.** That includes a unique partial name like "dav".
+    - What counts as plausible: a prefix match, or Damerau-Levenshtein ≤1 for names up to 4 letters
+      and ≤2 for longer names. Compared against first, last and full name and username.
+    - **One suggestion** → `No exact match for "X". Did you mean 4) Dave Miller? Reply #yes to send`.
+      The DM is held for 10 minutes (persisted, survives restarts).
+    - **2–3 tied suggestions** → listed with `Reply #dm 4 or #dm 9 with your message`; nothing is held.
+  - **`#yes`** sends the held DM. A new `#dm` replaces or clears it. With nothing held, `#yes` replies
+    "Nothing to send." HELP shows the `#yes` line only while a DM is held.
+  - **No plausible match** → `No member named "X". Text #who for the list`.
+  - **@mentions use exact matching only.** Anything ambiguous or inexact stays plain text, with no prompt.
+  - `!dm Name` (Matrix side) also requires an exact match.
+
+## Implementation choices (approved 2026-10-17)
+
+- Strict command shapes.
+- DM numbers are WHO numbers everywhere.
+- Allowlisted-but-not-joined and unknown numbers get responses only to JOIN/HELP/STOP/START.
+- Ghosts leave the room on STOP/remove and rejoin on START/JOIN.
+- Encrypted DMs to a ghost are refused with a notice; `!dm Name` opens an unencrypted one.
+- Only group-room members can DM SMS members.
+- Poll and announcement texts use the sender's first name; group messages use the full name.
+- Matrix → SMS bodies are capped at 800 chars, ending "(more in the app)".
+- Inbox failures retry in order (8 attempts, then park + alert).
+- Queued messages expire after 12 h; a daily carrier cap holds and alerts; unknown carriers get the
+  strictest per-minute limit.
+
+## Implementation choices this round (low-stakes; say if you want any changed)
+
+- **"#r" with no prior DM** replies "Nobody has sent you a DM yet. Text #dm name msg to start one."
+  It no longer falls back to posting in the group, since the prefix makes intent explicit.
+- **`#yes` help line text:** "#yes - send your pending DM", inserted right after the `#dm` line.
+  HELP stays at 2 segments.
+- **Post-JOIN follow-up:**
+  "Messaging Chat: To leave, text one word: STOP, CANCEL, END or QUIT. Text START to rejoin. Commands start
+  with #. Text HELP for the list." 136 chars, 1 segment.
+- **STOPALL / STOP ALL stay opt-out keywords** (not in your list). Telnyx blocks on them regardless, so
+  posting them to the group would contradict the block.
+- **Spend estimate counts inbound too** and uses the configured rates. Telnyx's own accounting may
+  differ. Which charges count toward Telnyx's limit, and when its day resets, are unverified;
+  the bridge uses the UTC day.
 
 ## Open (need you)
 
-- **D7 Reply quote encoding.** The brief's `↩ Dave: Saturday?… ` contains two non-GSM-7 characters
-  (`↩`, `…`), which forces every reply onto UCS-2: 70-char segments, roughly 2× cost for replies.
-  - Option: keep it as specified (current default; configurable in `sms.reply_quote_format`).
-  - Option: a GSM-7 form like `Re Dave: "Saturday?..." ` (stays 160-char).
-  - Lean: GSM-7 form.
-- **D8 Telnyx daily spend limit** on the messaging profile. Lean: yes, ~$5/day, as a runaway guard.
-  `telnyx_setup.py --daily-spend-limit 5.00`.
-- **D9 Telnyx `smart_encoding`** (profile field, verified to exist; that it swaps look-alike Unicode for GSM-7 is my inference, not verified). It would
-  partly fix D7, but it rewrites user content. Lean: leave off, decide D7 directly.
+- **D12 INFO keyword.** Your bare-keyword list leaves out INFO, but the campaign registered HELP *and*
+  INFO as help keywords (BRIEF §4). As built, bare "INFO" is a group message, per your list.
+  My understanding is that carrier rules expect registered help keywords to get the help reply; that is
+  inference, I haven't checked the CTIA handbook text.
+  - Lean: add INFO to the bare-keyword set (one-line change, `commands.HELP_KEYWORDS`).

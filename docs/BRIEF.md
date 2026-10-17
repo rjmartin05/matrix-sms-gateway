@@ -109,7 +109,7 @@ on, alias e.g. `#general:chat.ryanjmartin.net`.
 - Matrix → SMS: `Dave Miller: text` to every opted-in SMS member except the sender. System prefixes
   GSM-7 only; user content as-is (emoji → UCS-2, 70-char segments).
 - SMS → Matrix: posted by the sender's ghost.
-- Replies: `↩ Dave: Saturday?… ` quote prefix on SMS; SMS replies arrive as normal messages.
+- Replies: `Re Dave: "Saturday?..." ` quote prefix on SMS (D7); SMS replies arrive as normal messages.
 - Edits: `(edited) new text`. Redactions: ignore on SMS. Reactions: TBD.
 - Mentions: Matrix mention of a ghost → deliver normally. SMS `@Name` → real Matrix mention via name matcher.
 
@@ -118,50 +118,54 @@ on, alias e.g. `#general:chat.ryanjmartin.net`.
 - Matrix image → download via authenticated media, resize ~1200px JPEG < ~600 KB, serve at short-lived
   random public URL, send MMS.
 - Inbound MMS → download, upload to Matrix media, post `m.image` from ghost.
-- Video: link, not MMS. `PHOTOS OFF` → `[Dave sent a photo]`.
+- Video: link, not MMS. `#photos off` → `Dave sent a photo`.
 
 **Polls**
 
-- Matrix poll → `Messaging Chat poll from Dave: Saturday or Sunday? Reply VOTE 1 (Saturday), VOTE 2 (Sunday).`
-- `VOTE n` → real poll response from the ghost; applies to latest open poll in the room.
+- Matrix poll → `Messaging Chat poll from Dave: Saturday or Sunday? Reply #vote 1 (Saturday), #vote 2 (Sunday).`
+- `#vote n` → real poll response from the ghost; applies to latest open poll in the room.
 - Poll end → results text.
 
-**SMS commands** (case-insensitive, registry-driven)
+**SMS commands** (revised 2026-10-17, see DECISIONS.md D10/D11)
+
+Bare text is always a group message, except these carrier/registered keywords when they are the whole
+message: STOP-family (STOP, STOPALL, STOP ALL, UNSUBSCRIBE, CANCEL, END, QUIT), START, UNSTOP, HELP, JOIN.
+Member commands need a `#` prefix (`/` also works), any case.
 
 | Command | Effect |
 |---|---|
 | `JOIN` | opt in (allowlist only; else "Ask the group admin to add your number.") |
 | `STOP` / `START` | opt out / back in |
-| `HELP`, `INFO`, `?`, `COMMANDS` | command list |
-| `VOTE n` | answer latest poll |
-| `DM <name> <msg>` / `DM <n> <msg>` | private message |
-| `R <msg>` | reply to last DM sender |
-| `WHO` | numbered member list |
-| `NAME <Full Name>` | set display name |
-| `PHOTOS OFF` / `PHOTOS ON` | MMS toggle |
-| unknown | `Unknown command. Text HELP for the list.` |
-| plain text | posted to the group |
+| `HELP`, `#help` | command list |
+| `#vote n` | answer latest poll |
+| `#dm <name> <msg>` / `#dm <n> <msg>` | private message (exact name or WHO number) |
+| `#yes` | send a DM held after a non-exact name match |
+| `#r <msg>` | reply to last DM sender |
+| `#who` | numbered member list |
+| `#name <Full Name>` | set display name |
+| `#photos off` / `#photos on` | MMS toggle |
+| unknown `#word` | `Unknown command. Text HELP for the list.` |
+| anything else | posted to the group |
 
 HELP reply:
 
 ```
 Messaging Chat commands:
-VOTE 1 - answer latest poll
-DM name msg - private message
-R msg - reply to last DM
-WHO - list members
-NAME Dave Miller - set your name
-PHOTOS OFF/ON
+#vote 1 - answer latest poll
+#dm name msg - private message
+#r msg - reply to last DM
+#who - list members
+#name Dave Miller - set your name
+#photos off / #photos on
 STOP - leave, START - rejoin
 Questions: ryan@ryanjmartin.net
 ```
 
-**Name matching** — case-insensitive against display names and usernames; longest match wins.
-One → send + `Sent to Dave Miller`. Many → `Which Dave? 1) Dave Miller 2) Dave Smith. Text DM 1 your message.`
-None → `No member named Dave. Text WHO for the list.`
+**Name matching** — auto-send only on an exact full name, unique first name, username or WHO number;
+otherwise suggest (typo-tolerant) and wait for `#yes`. Details in DECISIONS.md D11.
 
 **DMs** — unencrypted DM rooms between ghost and target. Matrix → ghost DM delivered as `DM from Name: text`;
-reply with `R`.
+reply with `#r`.
 
 **Admin** (power-level checked): `!sms add|remove|list|status`, `!announce <text>` (formatted, @room,
 pinned, texted as `ANNOUNCEMENT from Ryan: …`, optional `| yes | no` RSVP poll), `!help`. Alerts on

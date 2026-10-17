@@ -8,6 +8,7 @@ Outbound SMS is enqueued with a (source, recipient) unique key so reprocessing c
 from __future__ import annotations
 
 import asyncio
+import calendar
 import html
 import json
 import logging
@@ -17,7 +18,7 @@ from dataclasses import dataclass
 
 from . import commands, compliance, names
 from .config import Config
-from .db import Database, Member
+from .db import Database, Member, day_key
 from .media import MediaStore, resize_to_jpeg
 from .outbound import OutboundQueue
 from .port import MatrixPort
@@ -32,6 +33,7 @@ POLL_END = ("m.poll.end", "org.matrix.msc3381.poll.end")
 MAX_INBOUND_TEXT = 4000
 MAX_LINK_MEDIA_BYTES = 50 * 1024 * 1024
 ALERT_DEBOUNCE = 3600
+PENDING_DM_TTL = 600  # seconds a non-exact #dm waits for #yes
 
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _FILENAME_RE = re.compile(r"^[\w\-. ]+\.(jpe?g|png|gif|heic|webp|mp4|mov|bmp|tiff?)$", re.IGNORECASE)
@@ -147,6 +149,7 @@ class Bridge:
         queue.on_alert = self.alert
         queue.on_blocked = self.on_send_blocked
         queue.estimate_segments = lambda t: count_segments(t).segments
+        queue.on_sent = self.check_spend
 
     # ---- lifecycle ------------------------------------------------------------------
 
@@ -336,6 +339,7 @@ class Bridge:
             return
         text = sanitize_inbound(msg.text)
         await self.db.add_usage("mms_in" if msg.media else "sms_in", count_segments(text).segments if text else 1)
+        await self.check_spend()
         member = await self.db.get_member(room_id, number)
         if member and msg.carrier and member.carrier != msg.carrier:
             await self.db.set_member_field(room_id, number, "carrier", msg.carrier)
@@ -369,7 +373,7 @@ class Bridge:
             return
         if cmd and cmd.name == "HELP":
             if member and member.status == "opted_in":
-                await self.reply_sms(room_id, number, commands.help_text(self.cfg.contact_email), src)
+                await self.reply_sms(room_id, number, await self._help_for(member), src)
             elif not (member and member.status == "opted_out"):
                 await self.reply_sms(room_id, number, compliance.help_registered(self.cfg.brand, self.cfg.contact_email), src)
             return
@@ -437,8 +441,15 @@ class Bridge:
         )
         self.queue.notify()
 
+    async def _help_for(self, member: Member) -> str:
+        pending = await self.db.get_pending_dm(member.room_id, member.number)
+        return commands.help_text(self.cfg.contact_email, dm_pending=pending is not None)
+
     async def _handle_member_command(self, cmd: commands.Parsed, member: Member, msg: InboundMessage, text: str, src: str) -> bool:
         room_id = member.room_id
+        if cmd.name == "HELP":
+            await self.reply_sms(room_id, member.number, await self._help_for(member), src)
+            return True
         if cmd.name == "WHO":
             cands = await self.candidates(room_id)
             lines = [f"{c.number}) {c.name}" for c in cands]
@@ -451,7 +462,7 @@ class Bridge:
             name = cmd.args["name"]
             await self.db.set_member_field(room_id, member.number, "display_name", name)
             await self.mx.set_displayname(self.mx.ghost_mxid(member.number), self.ghost_display(name))
-            await self.reply_sms(room_id, member.number, f"Name set to {name}. Text NAME Your Name to change it.", src)
+            await self.reply_sms(room_id, member.number, f"Name set to {name}.", src)
             return True
         if cmd.name == "PHOTOS":
             on = cmd.args["on"]
@@ -464,9 +475,19 @@ class Bridge:
         if cmd.name == "DM":
             await self._sms_dm(member, cmd.args["rest"], src, msg.provider_id)
             return True
+        if cmd.name == "YES":
+            pending = await self.db.get_pending_dm(room_id, member.number)
+            if pending is None:
+                await self.reply_sms(room_id, member.number, "Nothing to send.", src)
+                return True
+            await self.db.clear_pending_dm(room_id, member.number)
+            await self._deliver_dm(member, pending["target_mxid"], pending["message"], src, msg.provider_id,
+                                   confirm_name=pending["target_name"])
+            return True
         if cmd.name == "R":
             if not member.last_dm_from:
-                return False  # nobody has DMed them: "R u coming?" is just a group message
+                await self.reply_sms(room_id, member.number, "Nobody has sent you a DM yet. Text #dm name msg to start one.", src)
+                return True
             await self._deliver_dm(member, member.last_dm_from, cmd.args["text"], src, msg.provider_id)
             return True
         return False
@@ -478,7 +499,7 @@ class Bridge:
             return
         answers = json.loads(poll["answers"])
         if not 1 <= choice <= len(answers):
-            await self.reply_sms(member.room_id, member.number, f"Reply VOTE 1-{len(answers)}.", src)
+            await self.reply_sms(member.room_id, member.number, f"Reply #vote 1 to #vote {len(answers)}.", src)
             return
         answer_id, answer_text = answers[choice - 1]
         ghost = self.mx.ghost_mxid(member.number)
@@ -489,21 +510,32 @@ class Bridge:
         await self.reply_sms(member.room_id, member.number, f"Vote recorded: {truncate(answer_text, 40)}", src)
 
     async def _sms_dm(self, member: Member, rest: str, src: str, provider_id: str) -> None:
-        cands = await self.candidates(member.room_id)
-        res = names.match(rest, cands)
-        if res.ambiguous:
-            await self.reply_sms(member.room_id, member.number, names.ambiguous_reply(res), src)
+        room_id = member.room_id
+        await self.db.clear_pending_dm(room_id, member.number)  # a new #dm replaces any pending one
+        me = self.mx.ghost_mxid(member.number)
+        cands = await self.candidates(room_id)
+        res = names.resolve_dm(rest, cands)
+        if res.kind == "exact" and res.target.key == me:
+            await self.reply_sms(room_id, member.number, "That's you. Text #who for the list.", src)
             return
-        if res.target is None:
-            await self.reply_sms(member.room_id, member.number, names.none_reply(res), src)
-            return
-        if res.target.key == self.mx.ghost_mxid(member.number):
-            await self.reply_sms(member.room_id, member.number, "That's you. Text WHO for the list.", src)
-            return
-        if not res.message.strip():
-            await self.reply_sms(member.room_id, member.number, "Text DM name your message.", src)
-            return
-        await self._deliver_dm(member, res.target.key, res.message, src, provider_id, confirm_name=res.target.name)
+        if res.kind == "ambiguous" and any(c.key == me for c in res.candidates):
+            # You can't DM yourself, so you don't count toward a shared first name.
+            others = tuple(c for c in res.candidates if c.key != me)
+            res = (names.Resolution("exact", others[0], message=res.message, query=res.query) if len(others) == 1
+                   else names.Resolution("ambiguous", candidates=others, message=res.message, query=res.query))
+        if res.kind in ("fuzzy", "none"):
+            res = names.resolve_dm(rest, [c for c in cands if c.key != me])  # never suggest yourself
+        if res.kind == "exact":
+            await self._deliver_dm(member, res.target.key, res.message, src, provider_id, confirm_name=res.target.name)
+        elif res.kind == "ambiguous":
+            await self.reply_sms(room_id, member.number, names.ambiguous_reply(res), src)
+        elif res.kind == "fuzzy":
+            if res.target is not None:
+                await self.db.set_pending_dm(room_id, member.number, res.target.key, res.target.name,
+                                             res.message, PENDING_DM_TTL)
+            await self.reply_sms(room_id, member.number, names.fuzzy_reply(res), src)
+        else:
+            await self.reply_sms(room_id, member.number, names.none_reply(res), src)
 
     async def _deliver_dm(self, member: Member, target_mxid: str, text: str, src: str, provider_id: str, confirm_name: str | None = None) -> None:
         room_id = member.room_id
@@ -540,7 +572,7 @@ class Bridge:
                 data, ctype = await self.provider.fetch_media(m.url, self.cfg.inbound_media_max_bytes)
             except Exception as e:
                 log.warning("inbound media fetch failed: %s", e)
-                await self.mx.send_text(room_id, ghost, "[sent a photo that couldn't be downloaded]",
+                await self.mx.send_text(room_id, ghost, "sent a photo that couldn't be downloaded",
                                         notice=True, txn_id=f"sms-{msg.provider_id}-m{i}")
                 continue
             ctype = (m.content_type or ctype or "application/octet-stream").split(";")[0]
@@ -646,7 +678,7 @@ class Bridge:
             if sender == self.mx.bot_mxid:
                 return
             name = first_name(await self.sender_name(room_id, sender))
-            opts = ", ".join(f"VOTE {i + 1} ({truncate(t, 30)})" for i, (_, t) in enumerate(answers))
+            opts = ", ".join(f"#vote {i + 1} ({truncate(t, 30)})" for i, (_, t) in enumerate(answers))
             text = f"{self.cfg.brand} poll from {name}: {q} Reply {opts}."
             await self._fan_out(room_id, sender, Rendered(text), f"mx:{event_id}")
             return
@@ -726,19 +758,19 @@ class Bridge:
             caption = self._caption(content)
             url = content.get("url")
             if not url:
-                return Rendered(f"[{name} sent a photo]")
+                return Rendered(f"{name} sent a photo")
             data = await self.mx.download(url)
             jpeg = await asyncio.to_thread(resize_to_jpeg, data, self.cfg.image_max_px, self.cfg.image_max_bytes)
             link = await self.media.publish(jpeg, "image/jpeg", self.cfg.media_ttl_hours * 3600)
             text = f"{prefix}: {quote}{caption}" if caption else f"{prefix}:"
-            off = f"[{name} sent a photo]" + (f" {caption}" if caption else "")
+            off = f"{name} sent a photo" + (f": {caption}" if caption else "")
             return Rendered(text, link, off)
         if msgtype in ("m.video", "m.audio", "m.file") and not edited:
             what = {"m.video": "a video", "m.audio": "audio", "m.file": "a file"}[msgtype]
             url = content.get("url")
             info = content.get("info") or {}
             if not url or (info.get("size") or 0) > MAX_LINK_MEDIA_BYTES:
-                return Rendered(f"[{name} sent {what}]")
+                return Rendered(f"{name} sent {what}")
             data = await self.mx.download(url)
             link = await self.media.publish(
                 data, info.get("mimetype") or "application/octet-stream",
@@ -796,13 +828,48 @@ class Bridge:
         if media and not member.photos_on:
             text, media = rendered.photo_off_text or text, None
         if member.last_dm_from != sender:
-            text += " (reply: R msg)"
+            text += " (reply: #r msg)"
         await self.db.enqueue(
             source_key=f"mx:{event_id}", room_id=member.room_id, from_number=self.number_by_room[member.room_id],
             to_number=member.number, kind="dm", text=text, media_url=media, carrier=member.carrier,
         )
         await self.db.set_member_field(member.room_id, member.number, "last_dm_from", sender)
         self.queue.notify()
+
+    # ---- spend ----------------------------------------------------------------------
+
+    async def estimate_today_spend(self) -> float:
+        p = self.cfg.pricing
+        now = time.gmtime()
+        day_start = calendar.timegm((now.tm_year, now.tm_mon, now.tm_mday, 0, 0, 0))
+        t = await self.db.day_traffic(day_start)
+        return (
+            t["sms_seg"] * (p.sms_part + p.sms_carrier_fee)
+            + t["mms"] * (p.mms_out + p.mms_carrier_fee)
+            + t["sms_in_seg"] * p.sms_part
+            + t["mms_in"] * p.mms_in
+        )
+
+    async def check_spend(self) -> None:
+        """Alert once per UTC day when estimated spend crosses the configured fraction of the limit (D8)."""
+        p = self.cfg.pricing
+        if p.daily_spend_limit <= 0:
+            return
+        est = await self.estimate_today_spend()
+        threshold = p.daily_spend_limit * p.daily_spend_alert_fraction
+        if est < threshold:
+            return
+        cur = await self.db.execute(
+            "INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)", (f"spend_alert:{day_key()}", f"{est:.2f}")
+        )
+        if cur.rowcount == 0:
+            return  # already alerted today (survives restarts)
+        pct = round(100 * est / p.daily_spend_limit)
+        await self.alert(
+            f"spend:{day_key()}",
+            f"Estimated Telnyx spend today is ${est:.2f} ({pct}% of the ${p.daily_spend_limit:.2f} daily limit). "
+            "Telnyx stops sending at the limit.",
+        )
 
     # ---- ! commands -----------------------------------------------------------------
 
@@ -832,7 +899,7 @@ class Bridge:
                     "!sms remove +1XXXXXXXXXX - remove a number",
                     "!sms list - allowlist",
                     "!sms status - members, failures, usage and cost",
-                    "!announce text [| option | option] - pinned announcement, texted to everyone",
+                    "!announce text - pinned announcement, texted to everyone; add | yes | no for an RSVP poll",
                 ]
             await say("\n".join(lines))
             return
@@ -926,6 +993,9 @@ class Bridge:
             + si[1] * p.sms_part
             + mi[0] * p.mms_in
         )
+        today = await self.estimate_today_spend()
+        if p.daily_spend_limit > 0:
+            lines.append(f"Today (UTC): est. ${today:.2f} of ${p.daily_spend_limit:.2f} daily limit")
         lines.append(
             f"This month: SMS out {so[0]} ({so[1]} seg), MMS out {mo[0]}, SMS in {si[0]}, MMS in {mi[0]}. "
             f"Est. cost ${cost:.2f} (estimate from configured rates)"
@@ -940,23 +1010,24 @@ class Bridge:
             await say("Only group members can do that.")
             return
         cands = [c for c in await self.candidates(group) if self.is_ghost(c.key)]
-        res = names.match(query, cands, need_message=False)
-        if res.ambiguous:
-            await say("Which one? " + ", ".join(c.name for c in res.ambiguous))
+        found = names.exact_matches(query.split(), cands)
+        if len(found) > 1:
+            await say("Which one? " + ", ".join(c.name for c in found))
             return
-        if res.target is None:
-            await say(f"No SMS member named {query}.")
+        if not found:
+            await say(f"No SMS member matches {query} exactly. Use their full name, unique first name or WHO number.")
             return
-        ghost = res.target.key
+        target = found[0]
+        ghost = target.key
         room = await self.db.get_dm_room(ghost, sender)
         if room is None:
             room = await self.mx.create_dm(ghost, sender)
             await self.db.set_dm_room(ghost, sender, room)
-        await say(f"Opened a chat with {res.target.name}. Check your invites.")
+        await say(f"Opened a chat with {target.name}. Check your invites.")
 
     async def _cmd_announce(self, room_id: str, sender: str, arg: str, say) -> None:
         if not arg:
-            await say("Usage: !announce text [| option | option]")
+            await say("Usage: !announce text, optionally followed by | option | option")
             return
         bits = [b.strip() for b in arg.split("|")]
         text, options = bits[0], [b for b in bits[1:] if b]
@@ -977,5 +1048,5 @@ class Bridge:
             answers = [(f"a{i + 1}", o) for i, o in enumerate(options)]
             poll_id = await self.mx.send_poll_start(room_id, self.mx.bot_mxid, text, answers, self.cfg.poll_style)
             await self.db.add_poll(poll_id, room_id, self.mx.bot_mxid, text, answers, self.cfg.poll_style, 1)
-            sms += " Reply " + ", ".join(f"VOTE {i + 1} ({truncate(o, 30)})" for i, o in enumerate(options)) + "."
+            sms += " Reply " + ", ".join(f"#vote {i + 1} ({truncate(o, 30)})" for i, o in enumerate(options)) + "."
         await self._fan_out(room_id, self.mx.bot_mxid, Rendered(sms), f"mx:{evt}")
