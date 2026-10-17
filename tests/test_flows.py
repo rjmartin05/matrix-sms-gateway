@@ -596,10 +596,10 @@ def ghost_posts(env, number):
 
 async def test_bare_command_words_go_to_group(env):
     await joined(env, DAVE, "Dave Miller")
-    for text in ("who", "vote 1", "photos off", "info", "?"):
+    for text in ("who", "vote 1", "photos off", "more info?", "?"):
         await env.sms(DAVE, text)
     await env.drain()
-    assert [e["content"]["body"] for e in ghost_posts(env, DAVE)] == ["who", "vote 1", "photos off", "info", "?"]
+    assert [e["content"]["body"] for e in ghost_posts(env, DAVE)] == ["who", "vote 1", "photos off", "more info?", "?"]
     assert texts_to(env, DAVE) == []
 
 
@@ -607,7 +607,7 @@ async def test_unknown_hash_command_replies_and_is_not_posted(env):
     await joined(env, DAVE, "Dave Miller")
     await env.sms(DAVE, "#tbt great day")
     await env.drain()
-    assert texts_to(env, DAVE) == ["Unknown command. Text HELP for the list."]
+    assert texts_to(env, DAVE) == ["Unknown command, message not posted. Text it without the # to post it."]
     assert ghost_posts(env, DAVE) == []
 
 
@@ -615,9 +615,10 @@ async def test_hash_help_matches_bare_help(env):
     await joined(env, DAVE, "Dave Miller")
     await env.sms(DAVE, "#help")
     await env.sms(DAVE, "HELP")
+    await env.sms(DAVE, "info")
     await env.drain()
-    a, b = texts_to(env, DAVE)
-    assert a == b and a.startswith("Messaging Chat commands:\n#vote 1") and "#yes" not in a
+    a, b, c = texts_to(env, DAVE)
+    assert a == b == c and a.startswith("Messaging Chat commands:\n#vote 1") and "#yes" not in a
 
 
 async def setup_people(env):
@@ -756,3 +757,9 @@ async def test_sender_does_not_count_toward_shared_first_name(env):
     await env.drain()
     assert texts_to(env, SUE) == ["DM from Dave Miller: lunch?"]
     assert texts_to(env, DAVE)[-1] == "Sent to Dave Smith"
+
+
+async def test_bare_info_from_stranger_gets_registered_help(env):
+    await env.sms(STRANGER, "INFO")
+    await env.drain()
+    assert texts_to(env, STRANGER) == [compliance.help_registered("Messaging Chat", "help@example.org")]

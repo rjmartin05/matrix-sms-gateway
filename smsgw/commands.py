@@ -4,9 +4,9 @@ Two kinds of input are special; everything else is a normal group message:
 
 1. Carrier/registered keywords, only when they are the *entire* message (case-insensitive, surrounding
    whitespace ignored, same rule Telnyx uses: developers.telnyx.com/docs/messaging/messages/
-   configuration-and-usage): STOP-family, START/UNSTOP, HELP, JOIN.
+   configuration-and-usage): STOP-family, START/UNSTOP, HELP/INFO, JOIN.
 2. Member commands with a "#" prefix ("/" accepted as an alias): #vote, #dm, #r, #who, #name,
-   #photos, #help, #yes. An unknown "#word" gets "Unknown command. Text HELP for the list."
+   #photos, #help, #yes. An unknown "#word" is not posted; the sender is told to resend it without the #.
 
 "#" followed by a non-letter ("#1 fan", "# of people") is a normal message.
 """
@@ -20,11 +20,11 @@ from dataclasses import dataclass, field
 # Telnyx blocks on them, so the bridge must treat them as opt-outs rather than post them to the group.
 OPT_OUT_KEYWORDS = frozenset({"STOP", "STOPALL", "STOP ALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"})
 OPT_IN_KEYWORDS = frozenset({"START", "UNSTOP"})
-HELP_KEYWORDS = frozenset({"HELP"})
+HELP_KEYWORDS = frozenset({"HELP", "INFO"})  # both registered help keywords (D12)
 JOIN_KEYWORDS = frozenset({"JOIN"})
 
 NAME_MAX_LEN = 40
-UNKNOWN = "Unknown command. Text HELP for the list."
+UNKNOWN = "Unknown command, message not posted. Text it without the # to post it."
 
 _PREFIX_RE = re.compile(r"^\s*[#/]([A-Za-z]+)(.*)$", re.DOTALL)  # "#vote1" works too
 

@@ -58,12 +58,10 @@ That's inference; what matters is "successfully authenticated".
 
 ### 1d. Clone and build
 
-The code currently lives on the work branch, not `main`. **PLACEHOLDER (pick one):** use the branch
-below as-is, or merge it to `main` first and drop the `checkout` line.
+Deploy from `main` (merge the open PR first).
 
 ```sh
-git clone github-matrix-sms-gateway:rjmartin05/matrix-sms-gateway.git /root/matrix-sms-gateway
-git -C /root/matrix-sms-gateway checkout claude/confident-planck-qdkdzn
+git clone --branch main github-matrix-sms-gateway:rjmartin05/matrix-sms-gateway.git /root/matrix-sms-gateway
 cd /root/matrix-sms-gateway && docker build -t matrix-sms-gateway:latest .
 ```
 
@@ -102,8 +100,10 @@ Edit these:
 
 - `rooms[0].number`: **PLACEHOLDER** `+1717XXXXXXX`. The bridge refuses to start while it contains `X`.
 - `rooms[0].room`, if the alias differs.
-- `matrix.alerts_room`: the Matrix admin room for alerts. **PLACEHOLDER**: its alias or room ID.
-  Without it, the 60% spend alert (D8) only goes to the log.
+- `matrix.alerts_room`: the room ID of the private "Gateway Admin" room (step 7a). **PLACEHOLDER**, e.g.
+  `alerts_room: "!AbCdEf123:chat.ryanjmartin.net"` (quote it: YAML treats a leading `!` as a tag).
+  An alias (`#gateway-admin:chat.ryanjmartin.net`) also works if you give the room one.
+  Without it, alerts (60% spend, delivery failures, Telnyx unreachable, daily caps) only go to the log.
 
 `pricing.daily_spend_limit: 15.00` must match the Telnyx limit set in step 8.
 
@@ -175,13 +175,24 @@ A 302 or a Cloudflare login page instead of `ok`/`401` means an Access policy is
 
 ~~Locally-managed tunnel (`config.yml` ingress)~~: **N/A** for this host.
 
-## 7. Matrix room
+## 7. Matrix rooms
 
-In your Matrix client, in the group room:
+### 7a. Gateway Admin room (alerts)
+
+1. Create a private, invite-only room named "Gateway Admin". Unencrypted: the bot posts alerts without
+   E2EE and can't read encrypted rooms.
+2. Copy its room ID (`!…:chat.ryanjmartin.net`), usually under room settings → Advanced. Where each
+   client shows it is from memory, not verified. Put it in `matrix.alerts_room` (step 3), then
+   `systemctl restart matrix-sms-gateway`.
+3. Invite `@smsbot:chat.ryanjmartin.net`. It auto-joins on invite; it can't post alerts until it has.
+   No special power level is needed here.
+4. You can also run `!sms status` / `!sms list` there instead of in the group. Admin rights are still
+   checked against your power level in the group room.
+
+### 7b. Group room
 
 1. Invite `@smsbot:chat.ryanjmartin.net` (it auto-joins).
 2. Give it power level 50 (moderator): it needs that to invite ghosts, `@room` announcements, and pin.
-3. Also invite it to the admin room you set as `matrix.alerts_room`.
 
 ## 8. Telnyx profile
 
@@ -213,7 +224,8 @@ Then from that phone, in order:
 | `HELP` | **exactly one** reply: the `#vote 1 …` list. Two replies = Telnyx answers HELP too → re-run setup with `--help-autoresp` (D5) |
 | `who` / `yes` | posted to the room as normal messages (not commands) |
 | `#who` | numbered member list |
-| `#blah` | "Unknown command. Text HELP for the list." |
+| `#blah` | "Unknown command, message not posted. Text it without the # to post it." |
+| `INFO` | same command list as HELP (exactly one reply) |
 | `#dm <misspelled name> test` | "No exact match … Reply #yes to send"; then `#yes` → "Sent to …" |
 | `#vote 1` (after a Matrix poll), a photo both ways | as described in BRIEF.md §6 |
 | `STOP` | exactly one reply (the registered opt-out text); ghost leaves the room |
@@ -233,8 +245,10 @@ encrypted or not at all (it can be regenerated in the portal).
 
 ## Updating
 
+Merge to `main` on GitHub first, then:
+
 ```sh
-cd /root/matrix-sms-gateway && git pull && docker build -t matrix-sms-gateway:latest . \
+cd /root/matrix-sms-gateway && git pull origin main && docker build -t matrix-sms-gateway:latest . \
   && systemctl restart matrix-sms-gateway
 ```
 

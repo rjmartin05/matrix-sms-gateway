@@ -129,14 +129,14 @@ on, alias e.g. `#general:chat.ryanjmartin.net`.
 **SMS commands** (revised 2026-10-17, see DECISIONS.md D10/D11)
 
 Bare text is always a group message, except these carrier/registered keywords when they are the whole
-message: STOP-family (STOP, STOPALL, STOP ALL, UNSUBSCRIBE, CANCEL, END, QUIT), START, UNSTOP, HELP, JOIN.
+message: STOP-family (STOP, STOPALL, STOP ALL, UNSUBSCRIBE, CANCEL, END, QUIT), START, UNSTOP, HELP, INFO, JOIN.
 Member commands need a `#` prefix (`/` also works), any case.
 
 | Command | Effect |
 |---|---|
 | `JOIN` | opt in (allowlist only; else "Ask the group admin to add your number.") |
 | `STOP` / `START` | opt out / back in |
-| `HELP`, `#help` | command list |
+| `HELP`, `INFO`, `#help` | command list |
 | `#vote n` | answer latest poll |
 | `#dm <name> <msg>` / `#dm <n> <msg>` | private message (exact name or WHO number) |
 | `#yes` | send a DM held after a non-exact name match |
@@ -144,7 +144,7 @@ Member commands need a `#` prefix (`/` also works), any case.
 | `#who` | numbered member list |
 | `#name <Full Name>` | set display name |
 | `#photos off` / `#photos on` | MMS toggle |
-| unknown `#word` | `Unknown command. Text HELP for the list.` |
+| unknown `#word` | not posted; `Unknown command, message not posted. Text it without the # to post it.` |
 | anything else | posted to the group |
 
 HELP reply:
