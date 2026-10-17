@@ -108,7 +108,7 @@ on, alias e.g. `#general:example.com`.
   GSM-7 only; user content as-is (emoji → UCS-2, 70-char segments).
 - SMS → Matrix: posted by the sender's ghost.
 - Replies: `Re Dave: "Saturday?..." ` quote prefix on SMS (D7); SMS replies arrive as normal messages.
-- Edits: `(edited) new text`. Redactions: ignore on SMS. Reactions: TBD.
+- Edits: `(edited) new text`. Redactions: ignore on SMS. Reactions: inbound only (DECISIONS D4).
 - Mentions: Matrix mention of a ghost → deliver normally. SMS `@Name` → real Matrix mention via name matcher.
 
 **Photos**
