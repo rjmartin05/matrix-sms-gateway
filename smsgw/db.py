@@ -596,6 +596,17 @@ class Database:
             (room_id, number, since, limit),
         )
 
+    async def recent_own_posts(self, room_id: str, number: str, since: float, limit: int = 200) -> list[tuple[str, str]]:
+        """Texts ``number`` posted to the group, newest first: (matrix_event_id, original SMS text)."""
+        rows = await self.fetchall(
+            "SELECT m.matrix_event_id, json_extract(i.raw, '$.data.payload.text') AS text FROM message_map m"
+            " JOIN inbound i ON json_extract(i.raw, '$.data.payload.id') = m.provider_id"
+            " WHERE m.room_id=? AND m.number=? AND m.ts >= ? AND m.matrix_event_id IS NOT NULL"
+            " ORDER BY m.ts DESC LIMIT ?",
+            (room_id, number, since, limit),
+        )
+        return [(r["matrix_event_id"], r["text"] or "") for r in rows]
+
     async def save_reaction(self, room_id: str, number: str, target: str, key: str, reaction_event_id: str) -> None:
         await self.execute(
             "INSERT OR REPLACE INTO sms_reactions (room_id, number, target_event_id, reaction_key,"

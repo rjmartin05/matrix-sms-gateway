@@ -104,3 +104,18 @@ async def test_reaction_to_edit_targets_original(env):
     await env.sms(DAVE, f"👍 to “{sent}”")
     [r] = _reactions(env)
     assert r["content"]["m.relates_to"]["event_id"] == "$orig"
+
+
+async def test_reaction_to_own_message(env):
+    from tests.conftest import inbound_event
+    await joined(env, DAVE, "Dave Miller")
+    # Production persists every webhook in `inbound` before processing (web.py); do the same here.
+    evt = env.provider.parse(inbound_event(DAVE, "Sms test1"))
+    await env.db.add_inbound(evt.key, evt.event_type, evt.raw)
+    await env.bridge.handle_provider_event(evt)
+    [post] = _posts_by(env, DAVE)
+    # Verbatim shape from a live Google Messages webhook (2026-10-17): reacting to your own text.
+    await env.sms(DAVE, " ​😂​ to “ Sms test1 ” ")
+    [r] = _reactions(env)
+    assert r["content"]["m.relates_to"] == {"rel_type": "m.annotation", "event_id": post["event_id"], "key": "😂"}
+    assert len(_posts_by(env, DAVE)) == 1
