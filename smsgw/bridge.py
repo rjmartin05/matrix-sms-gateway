@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from . import commands, compliance, names, reactions
 from .config import Config
 from .db import Database, Member, day_key
-from .media import MediaStore, resize_to_jpeg
+from .media import MediaStore, initials, initials_avatar, resize_to_jpeg, square_avatar
 from .outbound import OutboundQueue
 from .port import MatrixPort
 from .provider.base import InboundMessage, Provider, WebhookEvent
@@ -236,6 +236,24 @@ class Bridge:
         sfx = self.cfg.ghost_name_suffix
         return name[: -len(sfx)] if sfx and name.endswith(sfx) else name
 
+    async def ensure_avatar(self, number: str, name: str) -> None:
+        """Give an SMS ghost a generated initials avatar, unless they set their own with #avatar.
+
+        Without one, clients build initials from "Name (SMS)" and show "R(". Regenerated when the
+        initials change (#name, !sms add). Best effort: never blocks messaging.
+        """
+        key = f"avatar:{number}"
+        current = await self.db.get_meta(key)
+        want = f"gen:{initials(name)}"
+        if current == "custom" or current == want:
+            return
+        try:
+            png = await asyncio.to_thread(initials_avatar, name, number)
+            await self.mx.set_avatar(self.mx.ghost_mxid(number), png, "image/png")
+            await self.db.set_meta(key, want)
+        except Exception:
+            log.exception("couldn't set generated avatar for %s", number)
+
     async def in_group(self, mxid: str) -> bool:
         """Only members of a bridged room may DM SMS members (registration is token-gated, but still)."""
         for room_id in self.number_by_room:
@@ -314,6 +332,7 @@ class Bridge:
         )
         ghost = self.mx.ghost_mxid(member.number)
         await self.mx.ensure_ghost(member.number, self.ghost_display(member.display_name))
+        await self.ensure_avatar(member.number, member.display_name)
         await self.mx.join(member.room_id, ghost)
 
     async def on_send_blocked(self, number: str, error: str) -> None:
@@ -394,6 +413,29 @@ class Bridge:
             if handled:
                 return
         await self._post_to_group(member, msg, text)
+
+    async def _sms_avatar(self, member: Member, msg: InboundMessage, reset: bool, src: str) -> None:
+        room_id, number = member.room_id, member.number
+        if reset:
+            await self.db.set_meta(f"avatar:{number}", "")
+            await self.ensure_avatar(number, member.display_name)
+            await self.reply_sms(room_id, number, "Profile picture reset.", src)
+            return
+        images = [m for m in msg.media if (m.content_type or "").startswith("image/")] or msg.media
+        if not images:
+            await self.reply_sms(room_id, number, "Text a photo with #avatar as the message to set your picture.", src)
+            return
+        try:
+            data, _ = await self.provider.fetch_media(images[0].url, self.cfg.inbound_media_max_bytes)
+            jpeg = await asyncio.to_thread(square_avatar, data)
+            await self.mx.ensure_ghost(number, self.ghost_display(member.display_name))
+            await self.mx.set_avatar(self.mx.ghost_mxid(number), jpeg, "image/jpeg")
+        except Exception:
+            log.exception("#avatar from %s failed", number)
+            await self.reply_sms(room_id, number, "Couldn't use that photo. Try another one.", src)
+            return
+        await self.db.set_meta(f"avatar:{number}", "custom")
+        await self.reply_sms(room_id, number, "Profile picture updated.", src)
 
     async def _try_reaction(self, member: Member, text: str, provider_id: str) -> bool:
         """Turn a phone reaction text into a Matrix reaction. False = not a reaction we can place."""
@@ -511,7 +553,11 @@ class Bridge:
             name = cmd.args["name"]
             await self.db.set_member_field(room_id, member.number, "display_name", name)
             await self.mx.set_displayname(self.mx.ghost_mxid(member.number), self.ghost_display(name))
+            await self.ensure_avatar(member.number, name)
             await self.reply_sms(room_id, member.number, f"Name set to {name}.", src)
+            return True
+        if cmd.name == "AVATAR":
+            await self._sms_avatar(member, msg, cmd.args["reset"], src)
             return True
         if cmd.name == "PHOTOS":
             on = cmd.args["on"]
@@ -614,6 +660,7 @@ class Bridge:
         room_id = member.room_id
         ghost = self.mx.ghost_mxid(member.number)
         await self.mx.ensure_ghost(member.number, self.ghost_display(member.display_name))
+        await self.ensure_avatar(member.number, member.display_name)
         await self.mx.join(room_id, ghost)
         first_event = None
         for i, m in enumerate(msg.media):
@@ -809,7 +856,12 @@ class Bridge:
             if not url:
                 return Rendered(f"{name} sent a photo")
             data = await self.mx.download(url)
-            jpeg = await asyncio.to_thread(resize_to_jpeg, data, self.cfg.image_max_px, self.cfg.image_max_bytes)
+            try:
+                jpeg = await asyncio.to_thread(resize_to_jpeg, data, self.cfg.image_max_px, self.cfg.image_max_bytes)
+            except Exception as e:
+                # A corrupt/unsupported image is permanent; retrying the inbox row won't fix it.
+                log.warning("couldn't convert photo %s for SMS: %s", url, e)
+                return Rendered(f"{name} sent a photo" + (f": {caption}" if caption else ""))
             link = await self.media.publish(jpeg, "image/jpeg", self.cfg.media_ttl_hours * 3600)
             text = f"{prefix}: {quote}{caption}" if caption else f"{prefix}:"
             off = f"{name} sent a photo" + (f": {caption}" if caption else "")
@@ -986,6 +1038,7 @@ class Bridge:
         ghost = self.mx.ghost_mxid(number)
         m = await self.db.upsert_member(room_id, number, ghost, name, sender)
         await self.mx.ensure_ghost(number, self.ghost_display(name))
+        await self.ensure_avatar(number, name)
         await self.db.log_consent(number, "allowlisted", "admin", room_id=room_id, detail=f"by {sender}")
         if m.status == "opted_in":
             await say(f"Updated {name} ({number}); already opted in.")

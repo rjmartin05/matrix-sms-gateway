@@ -73,3 +73,45 @@ class MediaStore:
             await self.db.delete_media_token(row["token"])
             n += 1
         return n
+
+
+# ---- ghost avatars ------------------------------------------------------------------------
+
+# Mid-tone backgrounds that keep white initials readable (contrast >= 4.5:1).
+AVATAR_COLORS = ["#1F6FB2", "#2E7D32", "#8E3B8E", "#B5481B", "#00796B", "#5D4FB3", "#A83246", "#5F6B23"]
+AVATAR_PX = 256
+
+
+def initials(name: str) -> str:
+    words = [w for w in name.split() if w[:1].isalnum()]
+    if not words:
+        return "#"
+    if len(words) == 1:
+        return words[0][0].upper()
+    return (words[0][0] + words[-1][0]).upper()
+
+
+def initials_avatar(name: str, seed: str) -> bytes:
+    """A colored circle with the person's initials, as PNG. ``seed`` (the number) picks a stable color."""
+    from PIL import ImageDraw, ImageFont
+
+    color = AVATAR_COLORS[sum(seed.encode()) % len(AVATAR_COLORS)]
+    im = Image.new("RGBA", (AVATAR_PX, AVATAR_PX), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    d.ellipse((0, 0, AVATAR_PX - 1, AVATAR_PX - 1), fill=color)
+    text = initials(name)
+    font = ImageFont.load_default(size=AVATAR_PX * 0.42 if len(text) > 1 else AVATAR_PX * 0.5)
+    d.text((AVATAR_PX / 2, AVATAR_PX / 2), text, font=font, fill="white", anchor="mm")
+    buf = io.BytesIO()
+    im.save(buf, "PNG", optimize=True)
+    return buf.getvalue()
+
+
+def square_avatar(data: bytes, px: int = 512) -> bytes:
+    """Center-crop a photo to a square and re-encode JPEG (for #avatar)."""
+    with Image.open(io.BytesIO(data)) as im:
+        im = ImageOps.exif_transpose(im).convert("RGB")
+        im = ImageOps.fit(im, (px, px), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=85, optimize=True)
+        return buf.getvalue()

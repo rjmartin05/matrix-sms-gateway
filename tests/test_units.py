@@ -101,7 +101,8 @@ def test_help_text_exact():
         "#r msg - reply to last DM\n"
         "#who - list members\n"
         "#name Dave Miller - set your name\n"
-        "#photos off / #photos on\n"
+        "#photos off/on\n"
+        "#avatar + photo - your pic\n"
         "STOP - leave, START - rejoin\n"
         "Questions: help@example.com"
     )

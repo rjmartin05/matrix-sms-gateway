@@ -186,8 +186,15 @@ class TelnyxProvider:
                 resp.raise_for_status()
                 if resp.content_length and resp.content_length > max_bytes:
                     raise ValueError(f"media too large ({resp.content_length} bytes)")
-                data = await resp.content.read(max_bytes + 1)
-                if len(data) > max_bytes:
-                    raise ValueError("media too large")
+                # StreamReader.read(n) returns whatever is buffered (often one chunk), not n bytes;
+                # a single read() truncated photos. Read to EOF.
+                data = bytearray()
+                async for chunk in resp.content.iter_chunked(64 * 1024):
+                    data += chunk
+                    if len(data) > max_bytes:
+                        raise ValueError("media too large")
+                if resp.content_length is not None and not resp.headers.get("Content-Encoding") and len(data) != resp.content_length:
+                    raise ValueError(f"media truncated ({len(data)} of {resp.content_length} bytes)")
+                data = bytes(data)
                 return data, resp.headers.get("Content-Type", "application/octet-stream")
         raise ValueError("media fetch failed")
