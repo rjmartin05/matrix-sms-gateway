@@ -9,10 +9,12 @@ from typing import Awaitable, Callable
 
 from mautrix.appservice import AppService, IntentAPI
 from mautrix.appservice.state_store import ASStateStore
+from mautrix.client import ClientAPI
 from mautrix.client.state_store.memory import MemoryStateStore
 from mautrix.errors import MForbidden, MNotFound
 from mautrix.types import (
     Event,
+    EventID,
     EventType,
     Membership,
     RoomAlias,
@@ -154,6 +156,15 @@ class MautrixPort:
             mentions["room"] = True
         content["m.mentions"] = mentions
         return await self._send(room_id, sender, "m.room.message", content, txn_id)
+
+    async def send_reaction(self, room_id: str, sender: str, event_id: str, key: str, *, txn_id: str | None = None) -> str:
+        content = {"m.relates_to": {"rel_type": "m.annotation", "event_id": event_id, "key": key}}
+        return await self._send(room_id, sender, "m.reaction", content, txn_id)
+
+    async def redact(self, room_id: str, sender: str, event_id: str) -> None:
+        # ClientAPI.redact directly: IntentAPI.redact pre-checks the redact power level, which a
+        # ghost redacting its own reaction doesn't need.
+        await ClientAPI.redact(self.intent(sender), RoomID(room_id), EventID(event_id))
 
     async def send_media(
         self, room_id: str, sender: str, data: bytes, mimetype: str, filename: str, *, txn_id: str | None = None

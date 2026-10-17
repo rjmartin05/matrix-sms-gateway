@@ -11,7 +11,13 @@
 - **D2 State:** SQLite (WAL), `scripts/backup.sh` snapshot in the nightly job.
 - **D3 Ingress:** `sms-hook.example.com` → bridge directly (`127.0.0.1:29341`); MMS media served there.
   Not behind Cloudflare Access; webhook signature verification is the protection.
-- **D4 Reactions:** skipped in v1.
+- **D4 Reactions:** inbound only.
+  - SMS -> Matrix: a phone's reaction text (Google Messages `👍 to “Name: text”`, iPhone `Loved “…”`) whose
+    quote matches a group text sent to that number in the last 7 days becomes an `m.reaction` from the
+    ghost on the original event (the original, not the edit, if the quoted text was an edit). Removal texts
+    redact it. No match = posted as a normal message. Google format verified from a live webhook; iPhone and
+    removal formats from memory (see `smsgw/reactions.py`).
+  - Matrix -> SMS: not relayed. It would cost one text per SMS member per reaction.
 - **D5 Opt-in/out:**
   - Telnyx handles STOP/START blocking and replies (autoresp_configs with registered wording,
     `scripts/telnyx_setup.py`). HELP autoresp only if live test shows a double reply.

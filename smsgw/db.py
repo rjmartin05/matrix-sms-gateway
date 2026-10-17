@@ -153,6 +153,17 @@ CREATE TABLE IF NOT EXISTS pending_dms (
     PRIMARY KEY (room_id, number)
 );
 
+-- Matrix reactions posted for SMS reaction texts ("👍 to “…”"), so a removal can redact them.
+CREATE TABLE IF NOT EXISTS sms_reactions (
+    room_id TEXT NOT NULL,
+    number TEXT NOT NULL,
+    target_event_id TEXT NOT NULL,
+    reaction_key TEXT NOT NULL,
+    reaction_event_id TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (room_id, number, target_event_id, reaction_key)
+);
+
 -- Daily per-carrier-class segment counts (for caps like T-Mobile's).
 CREATE TABLE IF NOT EXISTS daily_segments (
     day TEXT NOT NULL,
@@ -574,3 +585,34 @@ class Database:
             " VALUES (?, ?, ?, ?, ?)",
             (provider_id, event_id, room_id, number, time.time()),
         )
+
+    # ---- reactions -------------------------------------------------------------------
+
+    async def recent_group_texts(self, room_id: str, number: str, since: float, limit: int = 200) -> list[aiosqlite.Row]:
+        """Group texts sent to ``number``, newest first: (source_key, text)."""
+        return await self.fetchall(
+            "SELECT source_key, text FROM outbound WHERE room_id=? AND to_number=? AND kind='group'"
+            " AND source_key LIKE 'mx:%' AND status='sent' AND created_at >= ? ORDER BY id DESC LIMIT ?",
+            (room_id, number, since, limit),
+        )
+
+    async def save_reaction(self, room_id: str, number: str, target: str, key: str, reaction_event_id: str) -> None:
+        await self.execute(
+            "INSERT OR REPLACE INTO sms_reactions (room_id, number, target_event_id, reaction_key,"
+            " reaction_event_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (room_id, number, target, key, reaction_event_id, time.time()),
+        )
+
+    async def pop_reaction(self, room_id: str, number: str, target: str, key: str) -> str | None:
+        r = await self.fetchone(
+            "SELECT reaction_event_id FROM sms_reactions WHERE room_id=? AND number=? AND target_event_id=?"
+            " AND reaction_key=?", (room_id, number, target, key),
+        )
+        if r is None:
+            return None
+        await self.execute(
+            "DELETE FROM sms_reactions WHERE room_id=? AND number=? AND target_event_id=? AND reaction_key=?",
+            (room_id, number, target, key),
+        )
+        return r["reaction_event_id"]
+

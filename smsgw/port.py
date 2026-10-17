@@ -53,6 +53,10 @@ class MatrixPort(Protocol):
         self, room_id: str, sender: str, poll_event_id: str, answer_id: str, style: str, *, txn_id: str | None = None
     ) -> str: ...
 
+    async def send_reaction(self, room_id: str, sender: str, event_id: str, key: str, *, txn_id: str | None = None) -> str: ...
+
+    async def redact(self, room_id: str, sender: str, event_id: str) -> None: ...
+
     async def joined_members(self, room_id: str) -> dict[str, str]:
         """mxid -> display name (falls back to localpart)."""
 
