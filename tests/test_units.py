@@ -137,7 +137,7 @@ def test_registered_texts_exact():
 @pytest.mark.parametrize("text,name", [
     ("STOP", "STOP"), (" stop ", "STOP"), ("Stop all", "STOP"), ("unsubscribe", "STOP"),
     ("cancel", "STOP"), ("END", "STOP"), ("quit", "STOP"), ("start", "START"), ("UNSTOP", "START"),
-    ("join", "JOIN"), ("help", "HELP"), ("HELP ", "HELP"),
+    ("join", "JOIN"), ("help", "HELP"), ("HELP ", "HELP"), ("info", "HELP"), (" INFO ", "HELP"),
     ("#who", "WHO"), ("/WHO", "WHO"), ("#vote 2", "VOTE"), ("#Vote #3", "VOTE"), ("#vote1", "VOTE"),
     ("#photos off", "PHOTOS"), ("/photos ON", "PHOTOS"), ("#dm Dave see you", "DM"), ("#r on my way", "R"),
     ("#name Dave Miller", "NAME"), ("#help", "HELP"), ("/help", "HELP"), ("#yes", "YES"), ("#YES", "YES"),
@@ -150,7 +150,7 @@ def test_commands_recognized(text, name):
 @pytest.mark.parametrize("text", [
     # Bare words are always group messages now, except whole-message carrier keywords.
     "yes", "YES", "Yes!", "who", "WHO", "vote 2", "photos off", "DM Dave hi", "r u coming",
-    "NAME Dave Miller", "info", "INFO", "?", "commands", "name the place",
+    "NAME Dave Miller", "info please", "more info?", "?", "commands", "name the place",
     "stop it lol", "please stop", "cancel saturday?", "who is driving?", "the end", "started yet?",
     "join us saturday", "help me move", "#1 fan of pizza", "# of people coming?", "",
 ])
@@ -161,7 +161,9 @@ def test_plain_messages_are_not_commands(text):
 @pytest.mark.parametrize("text", ["#blessed", "#tbt great day", "/s", "#vot 1", "#info", "#commands"])
 def test_unknown_hash_word(text):
     p = commands.parse(text)
-    assert p.name == "UNKNOWN" and p.error == "Unknown command. Text HELP for the list."
+    assert p.name == "UNKNOWN"
+    assert p.error == "Unknown command, message not posted. Text it without the # to post it."
+    assert count_segments(p.error).encoding == "GSM-7" and count_segments(p.error).segments == 1
 
 
 def test_command_args():

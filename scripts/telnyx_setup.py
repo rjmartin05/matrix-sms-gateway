@@ -91,7 +91,7 @@ def main() -> int:
         {"op": "start", "keywords": ["START"], "resp_text": OPT_IN, "country_code": "US"},
     ]
     if args.help_autoresp:
-        configs.append({"op": "help", "keywords": ["HELP"], "resp_text": HELP, "country_code": "US"})
+        configs.append({"op": "help", "keywords": ["HELP", "INFO"], "resp_text": HELP, "country_code": "US"})
 
     have_ops = {
         (c.get("op"), c.get("country_code"))
