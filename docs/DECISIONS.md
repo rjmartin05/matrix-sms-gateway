@@ -44,8 +44,9 @@
     `#name`, `#photos on|off`, `#help`, `#yes`.
   - **Bare text is always a group message**, except these, when they are the whole message:
     - STOP family: STOP, STOPALL, STOP ALL, UNSUBSCRIBE, CANCEL, END, QUIT
-    - START, UNSTOP, HELP, JOIN
-  - **An unknown `#word`** gets "Unknown command. Text HELP for the list." and is not posted.
+    - START, UNSTOP, HELP, INFO, JOIN (INFO added by D12)
+  - **An unknown `#word` is not posted.** The reply is "Unknown command, message not posted. Text it
+    without the # to post it." (GSM-7, 1 segment; changed 2026-10-18).
   - **A prefixed command with bad arguments** gets a usage line and is not posted. Examples: `#vote two`,
     `#dm dave` with no message, `#photos maybe`, `#who is here`.
   - **`#` followed by a non-letter is a normal message** ("#1 fan", "# of people").
@@ -101,10 +102,16 @@
   differ. Which charges count toward Telnyx's limit, and when its day resets, are unverified;
   the bridge uses the UTC day.
 
-## Open (need you)
+## Decided (2026-10-18)
 
-- **D12 INFO keyword.** Your bare-keyword list leaves out INFO, but the campaign registered HELP *and*
-  INFO as help keywords (BRIEF §4). As built, bare "INFO" is a group message, per your list.
-  My understanding is that carrier rules expect registered help keywords to get the help reply; that is
-  inference, I haven't checked the CTIA handbook text.
-  - Lean: add INFO to the bare-keyword set (one-line change, `commands.HELP_KEYWORDS`).
+- **D12 INFO:** bare INFO (whole message) gets the same reply as HELP: the command list for members, the
+  registered help text for everyone else. If live testing shows Telnyx auto-replying to HELP,
+  `telnyx_setup.py --help-autoresp` now covers HELP and INFO together.
+- **Unknown `#word` reply** changed (see D10).
+- **Approved:** STOPALL/STOP ALL as opt-outs; `#r` with no DM; sender excluded from name ties; em-dash
+  reading of the fuzzy-reply spec; typo thresholds; the new HELP / follow-up texts.
+- **Deploy from `main`.** Alerts go to a private, unencrypted "Gateway Admin" room (DEPLOY.md §7a).
+
+## Open
+
+None.
