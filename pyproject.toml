@@ -2,6 +2,8 @@
 name = "matrix-sms-gateway"
 version = "0.1.0"
 description = "Matrix appservice bridging a group room to SMS/MMS members via Telnyx"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "mautrix==0.21.1",
@@ -19,7 +21,7 @@ dev = ["pytest>=8", "pytest-asyncio>=0.24"]
 smsgw = "smsgw.__main__:cli"
 
 [build-system]
-requires = ["setuptools>=69"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]

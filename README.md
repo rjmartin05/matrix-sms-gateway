@@ -29,3 +29,10 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 ```
 
 Secrets live in `.env` only (gitignored).
+
+## License
+
+Copyright (C) 2026 Ryan Martin
+
+GNU Affero General Public License v3.0 or later. See [LICENSE](LICENSE).
+If you run a modified version as a network service, you must offer its users the modified source.
