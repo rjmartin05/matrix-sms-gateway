@@ -113,7 +113,9 @@ class MautrixPort:
     async def join(self, room_id: str, mxid: str) -> None:
         intent = self.intent(mxid)
         if mxid == self.bot_mxid:
-            await intent.join_room(RoomID(room_id))
+            # No retries: mautrix's default (4, ~100 s total) stalls startup when the bot isn't
+            # invited yet. Bridge.start() logs and continues; the bot joins on invite instead.
+            await intent.join_room(RoomID(room_id), max_retries=0)
             return
         await intent.ensure_registered()
         await intent.ensure_joined(RoomID(room_id))
