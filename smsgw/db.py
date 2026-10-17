@@ -251,6 +251,13 @@ class Database:
         async with self.conn.execute(sql, tuple(params)) as cur:
             return list(await cur.fetchall())
 
+    async def get_meta(self, key: str) -> str | None:
+        r = await self.fetchone("SELECT value FROM meta WHERE key=?", (key,))
+        return r["value"] if r else None
+
+    async def set_meta(self, key: str, value: str) -> None:
+        await self.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
+
     # ---- members ---------------------------------------------------------------------
 
     async def get_member(self, room_id: str, number: str) -> Member | None:

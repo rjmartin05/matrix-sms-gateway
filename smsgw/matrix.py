@@ -112,6 +112,12 @@ class MautrixPort:
         await intent.ensure_registered()
         await intent.set_displayname(name)
 
+    async def set_avatar(self, mxid: str, data: bytes, mimetype: str) -> None:
+        intent = self.intent(mxid)
+        await intent.ensure_registered()
+        mxc = await intent.upload_media(data, mime_type=mimetype, filename="avatar")
+        await intent.set_avatar_url(mxc)
+
     async def join(self, room_id: str, mxid: str) -> None:
         intent = self.intent(mxid)
         if mxid == self.bot_mxid:

@@ -58,6 +58,7 @@ class FakePort:
         self._ids = itertools.count(1)
         self.pinned: list[str] = []
         self.redacted: list[tuple[str, str]] = []
+        self.avatars: list[tuple[str, bytes, str]] = []
 
     def ghost_mxid(self, number: str) -> str:
         return f"@sms_{number.lstrip('+')}:{DOMAIN}"
@@ -78,6 +79,9 @@ class FakePort:
         for members in self.rooms.values():
             if mxid in members:
                 members[mxid] = name
+
+    async def set_avatar(self, mxid: str, data: bytes, mimetype: str) -> None:
+        self.avatars.append((mxid, data, mimetype))
 
     async def join(self, room_id: str, mxid: str) -> None:
         self.rooms.setdefault(room_id, {})[mxid] = self.displaynames.get(mxid, mxid[1:].split(":")[0])

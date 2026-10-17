@@ -6,7 +6,7 @@ Two kinds of input are special; everything else is a normal group message:
    whitespace ignored, same rule Telnyx uses: developers.telnyx.com/docs/messaging/messages/
    configuration-and-usage): STOP-family, START/UNSTOP, HELP/INFO, JOIN.
 2. Member commands with a "#" prefix ("/" accepted as an alias): #vote, #dm, #r, #who, #name,
-   #photos, #help, #yes. An unknown "#word" is not posted; the sender is told to resend it without the #.
+   #photos, #avatar, #help, #yes. An unknown "#word" is not posted; the sender is told to resend it without the #.
 
 "#" followed by a non-letter ("#1 fan", "# of people") is a normal message.
 """
@@ -78,6 +78,13 @@ def _photos(rest: str) -> Parsed:
     return Parsed("PHOTOS", error="Text #photos off or #photos on.")
 
 
+def _avatar(rest: str) -> Parsed:
+    v = rest.upper()
+    if v in ("", "RESET", "OFF"):
+        return Parsed("AVATAR", {"reset": bool(v)})
+    return Parsed("AVATAR", error="Text a photo with #avatar to set your picture, or #avatar reset.")
+
+
 def _bare(name: str):
     def parse(rest: str) -> Parsed:
         return Parsed(name) if not rest else Parsed(name, error=UNKNOWN)
@@ -93,6 +100,7 @@ PREFIXED = {
     "WHO": _bare("WHO"),
     "NAME": _name,
     "PHOTOS": _photos,
+    "AVATAR": _avatar,
     "HELP": _bare("HELP"),
     "YES": _bare("YES"),
 }
@@ -104,7 +112,8 @@ HELP_LINES = [
     "#r msg - reply to last DM",
     "#who - list members",
     "#name Dave Miller - set your name",
-    "#photos off / #photos on",
+    "#photos off/on",
+    "#avatar + photo - your pic",
     "STOP - leave, START - rejoin",
 ]
 YES_HELP_LINE = "#yes - send your pending DM"
