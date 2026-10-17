@@ -156,7 +156,8 @@ Messaging Chat commands:
 #r msg - reply to last DM
 #who - list members
 #name Dave Miller - set your name
-#photos off / #photos on
+#photos off/on
+#avatar + photo - your pic
 STOP - leave, START - rejoin
 Questions: ryan@ryanjmartin.net
 ```
