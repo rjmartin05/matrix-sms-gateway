@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 import re
 from typing import Awaitable, Callable
@@ -26,6 +27,27 @@ from mautrix.types import (
 from .config import Config
 
 log = logging.getLogger("smsgw.matrix")
+
+
+def _jsonable(obj):
+    """mautrix leaves its own objects in serialized events (see event_to_dict)."""
+    if hasattr(obj, "serialize"):
+        return obj.serialize()
+    return str(obj)
+
+
+def event_to_dict(evt: Event) -> dict:
+    """Plain-JSON form of an event, safe to persist.
+
+    mautrix's state store adds ``unsigned["mautrix_prev_membership"]`` (a ``Member`` object) to
+    membership events, and ``Event.serialize()`` passes it through untouched, so ``json.dumps``
+    failed and the event was dropped. Drop that key and convert anything else non-JSON.
+    """
+    raw = evt.serialize()
+    unsigned = raw.get("unsigned")
+    if isinstance(unsigned, dict):
+        unsigned.pop("mautrix_prev_membership", None)
+    return json.loads(json.dumps(raw, default=_jsonable))
 
 
 class StateStore(ASStateStore, MemoryStateStore):
@@ -66,7 +88,7 @@ class MautrixPort:
 
     async def start(self, on_event: Callable[[dict], Awaitable[None]]) -> None:
         async def handler(evt: Event) -> None:
-            await on_event(evt.serialize())
+            await on_event(event_to_dict(evt))
 
         self.az.matrix_event_handler(handler)
         await self.az.start(self.cfg.appservice_host, self.cfg.appservice_port)
