@@ -343,3 +343,23 @@ def test_parse_delivery_event(keypair):
     evt = TelnyxProvider("k", pub).parse(body)
     assert evt.key == "message.finalized:m1"
     assert evt.delivery.failed and not evt.delivery.delivered and "40002" in evt.delivery.error
+
+
+def test_member_event_with_mautrix_prev_membership_is_json_safe():
+    # mautrix's state store puts a Member object here before handlers run; it used to crash
+    # db.add_matrix_event (json.dumps) and drop every membership event.
+    import json as _json
+
+    from mautrix.types import Event, Member, Membership
+
+    from smsgw.matrix import event_to_dict
+
+    evt = Event.deserialize({
+        "type": "m.room.member", "state_key": "@a:x", "sender": "@a:x", "event_id": "$1", "room_id": "!r:x",
+        "origin_server_ts": 1, "content": {"membership": "leave"}, "unsigned": {"age": 5},
+    })
+    evt.unsigned["mautrix_prev_membership"] = Member(membership=Membership.JOIN, displayname="A")
+    d = event_to_dict(evt)
+    _json.dumps(d)
+    assert d["content"]["membership"] == "leave"
+    assert "mautrix_prev_membership" not in d["unsigned"]
