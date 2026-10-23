@@ -1,0 +1,10 @@
+mautrix==0.21.1
+aiohttp<4,>=3.10
+aiosqlite>=0.20
+cryptography>=43
+Pillow>=11
+PyYAML>=6
+
+[dev]
+pytest>=8
+pytest-asyncio>=0.24
