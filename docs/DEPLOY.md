@@ -1,5 +1,8 @@
 # Deploy on the `matrix` VM
 
+Examples use `example.com` as the Matrix server name (`matrix_domain`), `matrix.example.com` as the
+playbook inventory host and `sms-hook.example.com` as the webhook hostname: replace them with yours.
+
 Run everything as root on the VM. Commands are copy-paste ready except where marked
 **PLACEHOLDER**. Nothing here texts anyone; the first SMS goes out only after a number texts JOIN.
 
@@ -70,7 +73,7 @@ cd /root/matrix-sms-gateway && docker build -t matrix-sms-gateway:latest .
 ```sh
 mkdir -p /matrix/sms-gateway/data
 chown 10001:10001 /matrix/sms-gateway/data
-python3 /root/matrix-sms-gateway/scripts/gen_registration.py --out /matrix/sms-gateway
+python3 /root/matrix-sms-gateway/scripts/gen_registration.py --out /matrix/sms-gateway --domain example.com   # PLACEHOLDER: your matrix_domain
 chown matrix:matrix /matrix/sms-gateway/registration.yaml
 chmod 0640 /matrix/sms-gateway/registration.yaml
 chmod 0600 /matrix/sms-gateway/.env
@@ -145,7 +148,7 @@ Expect `bot can't join #general... invite @smsbot:example.com` until step 7.
 
 ## 6. Public hostname (Cloudflare Tunnel, dashboard-managed)
 
-Your tunnel was installed with `cloudflared service install <token>`, so routes are managed in the
+If your tunnel was installed with `cloudflared service install <token>`, its routes are managed in the
 dashboard. No change on the VM.
 
 In the Cloudflare Zero Trust dashboard: Networks → Tunnels → your tunnel → **Published application routes**
@@ -173,7 +176,9 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST https://sms-hook.example.com/te
 
 A 302 or a Cloudflare login page instead of `ok`/`401` means an Access policy is in the way.
 
-~~Locally-managed tunnel (`config.yml` ingress)~~: **N/A** for this host.
+Locally-managed tunnel (`/etc/cloudflared/config.yml` with an `ingress:` list) instead: add
+`- hostname: sms-hook.example.com` / `service: http://localhost:29341` above the catch-all rule and
+restart `cloudflared`.
 
 ## 7. Matrix rooms
 
@@ -199,8 +204,11 @@ A 302 or a Cloudflare login page instead of `ok`/`401` means an Access policy is
 ```sh
 cd /root/matrix-sms-gateway
 set -a; . /matrix/sms-gateway/.env; set +a
-python3 scripts/telnyx_setup.py            # dry run: shows current state + planned changes
-python3 scripts/telnyx_setup.py --apply
+# PLACEHOLDERS: brand and email must match compliance.* in config.yaml and your 10DLC registration.
+python3 scripts/telnyx_setup.py --brand "Example Chat" --contact-email help@example.com \
+  --webhook-url https://sms-hook.example.com/telnyx/webhook            # dry run: current state + planned changes
+python3 scripts/telnyx_setup.py --brand "Example Chat" --contact-email help@example.com \
+  --webhook-url https://sms-hook.example.com/telnyx/webhook --apply
 ```
 
 `--apply` sets:

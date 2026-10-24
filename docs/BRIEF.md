@@ -19,13 +19,6 @@ plain SMS/MMS, via Telnyx. Replaces GroupMe's SMS mode (discontinued Aug 2026) a
   photos and DMs are attributed to them, not to a bot.
 - Personal project. Low volume.
 
-## 2. Working style
-
-- Evan makes decisions. On real choices (language, data model, UX), lay out tradeoffs + lean and ask.
-- Flag every placeholder in any command; prefer copy-paste-ready commands with no placeholders.
-- Label fact vs. inference; verify version-sensitive facts against current docs/source.
-- Direct and technical.
-
 ## 3. As-built environment (facts)
 
 **Host**

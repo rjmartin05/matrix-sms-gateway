@@ -3,7 +3,7 @@
 
 Stdlib only, so it runs on the VM without installing anything:
 
-    python3 gen_registration.py --out /matrix/sms-gateway
+    python3 gen_registration.py --out /matrix/sms-gateway --domain example.com
 
 Writes <out>/registration.yaml (for Synapse) and appends SMSGW_AS_TOKEN / SMSGW_HS_TOKEN to
 <out>/.env. Refuses to overwrite an existing registration (rotating tokens needs both sides
@@ -22,7 +22,7 @@ import sys
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
-    ap.add_argument("--domain", default="example.com")
+    ap.add_argument("--domain", required=True, help="your Matrix server name (matrix_domain), e.g. example.com")
     ap.add_argument("--id", default="sms-gateway")
     ap.add_argument("--url", default="http://matrix-sms-gateway:29340")
     ap.add_argument("--bot", default="smsbot")
