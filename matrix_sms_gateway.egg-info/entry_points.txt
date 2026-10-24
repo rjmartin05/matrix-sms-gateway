@@ -1,0 +1,2 @@
+[console_scripts]
+smsgw = smsgw.__main__:cli

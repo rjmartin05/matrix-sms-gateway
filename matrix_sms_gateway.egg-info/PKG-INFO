@@ -1,0 +1,17 @@
+Metadata-Version: 2.4
+Name: matrix-sms-gateway
+Version: 0.1.0
+Summary: Matrix appservice bridging a group room to SMS/MMS members via Telnyx
+License-Expression: AGPL-3.0-or-later
+Requires-Python: >=3.11
+License-File: LICENSE
+Requires-Dist: mautrix==0.21.1
+Requires-Dist: aiohttp<4,>=3.10
+Requires-Dist: aiosqlite>=0.20
+Requires-Dist: cryptography>=43
+Requires-Dist: Pillow>=11
+Requires-Dist: PyYAML>=6
+Provides-Extra: dev
+Requires-Dist: pytest>=8; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.24; extra == "dev"
+Dynamic: license-file

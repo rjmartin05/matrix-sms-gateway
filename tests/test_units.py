@@ -10,6 +10,7 @@ from smsgw.provider.base import SignatureError
 from smsgw.provider.telnyx import TelnyxProvider
 from smsgw.segments import count_segments, is_gsm7, normalize_typography
 
+BRAND = "Example Chat"
 EMAIL = "help@example.com"
 
 
@@ -80,8 +81,8 @@ def _all_system_texts():
     yield compliance.opt_in_followup(brand)
     yield compliance.opt_out(brand)
     yield compliance.help_registered(brand, EMAIL)
-    yield commands.help_text(EMAIL)
-    yield commands.help_text(EMAIL, dm_pending=True)
+    yield commands.help_text(BRAND, EMAIL)
+    yield commands.help_text(BRAND, EMAIL, dm_pending=True)
     yield commands.UNKNOWN
     for p in ("#vote x", "#dm dave", "#r", "#name", "#photos maybe", "#who me"):
         yield commands.parse(p).error
@@ -94,7 +95,7 @@ def test_system_texts_are_gsm7_basic_without_brackets():
 
 
 def test_help_text_exact():
-    assert commands.help_text(EMAIL) == (
+    assert commands.help_text(BRAND, EMAIL) == (
         "Example Chat commands:\n"
         "#vote 1 - answer latest poll\n"
         "#dm name msg - private message\n"
@@ -106,12 +107,12 @@ def test_help_text_exact():
         "STOP - leave, START - rejoin\n"
         "Questions: help@example.com"
     )
-    assert count_segments(commands.help_text(EMAIL)).segments == 2
+    assert count_segments(commands.help_text(BRAND, EMAIL)).segments == 2
 
 
 def test_help_lists_yes_only_while_pending():
-    assert "#yes" not in commands.help_text(EMAIL)
-    pending = commands.help_text(EMAIL, dm_pending=True)
+    assert "#yes" not in commands.help_text(BRAND, EMAIL)
+    pending = commands.help_text(BRAND, EMAIL, dm_pending=True)
     assert "#yes - send your pending DM" in pending
     assert count_segments(pending).segments == 2
 

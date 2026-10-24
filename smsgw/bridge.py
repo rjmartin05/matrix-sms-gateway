@@ -534,7 +534,7 @@ class Bridge:
 
     async def _help_for(self, member: Member) -> str:
         pending = await self.db.get_pending_dm(member.room_id, member.number)
-        return commands.help_text(self.cfg.contact_email, dm_pending=pending is not None)
+        return commands.help_text(self.cfg.brand, self.cfg.contact_email, dm_pending=pending is not None)
 
     async def _handle_member_command(self, cmd: commands.Parsed, member: Member, msg: InboundMessage, text: str, src: str) -> bool:
         room_id = member.room_id

@@ -28,16 +28,23 @@ import urllib.error
 import urllib.request
 
 API = "https://api.telnyx.com/v2"
-BRAND = "Example Chat"
-EMAIL = "help@example.com"
 
-OPT_IN = (
-    f"{BRAND}: You've joined the group text relay. Group messages will be sent to this number; "
-    "reply to post to the group. Message frequency varies. Msg&data rates may apply. "
-    "Reply HELP for help, STOP to opt out."
-)
-OPT_OUT = f"{BRAND}: You are unsubscribed and will receive no further messages. Reply START to rejoin."
-HELP = f"{BRAND}: Group text relay. Reply STOP to opt out, START to rejoin. Help: {EMAIL}"
+
+# Must match the texts in your 10DLC campaign registration (same wording as smsgw/compliance.py).
+def opt_in_text(brand: str) -> str:
+    return (
+        f"{brand}: You've joined the group text relay. Group messages will be sent to this number; "
+        "reply to post to the group. Message frequency varies. Msg&data rates may apply. "
+        "Reply HELP for help, STOP to opt out."
+    )
+
+
+def opt_out_text(brand: str) -> str:
+    return f"{brand}: You are unsubscribed and will receive no further messages. Reply START to rejoin."
+
+
+def help_text(brand: str, email: str) -> str:
+    return f"{brand}: Group text relay. Reply STOP to opt out, START to rejoin. Help: {email}"
 
 
 def call(method: str, path: str, key: str, body: dict | None = None) -> dict:
@@ -58,7 +65,9 @@ def call(method: str, path: str, key: str, body: dict | None = None) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true", help="actually make changes (default: dry run)")
-    ap.add_argument("--webhook-url", default="https://sms-hook.example.com/telnyx/webhook")
+    ap.add_argument("--brand", required=True, help="10DLC brand name, same as compliance.brand in config.yaml")
+    ap.add_argument("--contact-email", required=True, help="help contact, same as compliance.contact_email")
+    ap.add_argument("--webhook-url", required=True, help="e.g. https://sms-hook.example.com/telnyx/webhook")
     ap.add_argument("--help-autoresp", action="store_true")
     ap.add_argument("--daily-spend-limit", default="15.00",
                     help="USD per day (D8, default 15.00). Keep pricing.daily_spend_limit in config.yaml equal.")
@@ -87,11 +96,11 @@ def main() -> int:
     }
 
     configs = [
-        {"op": "stop", "keywords": ["STOP"], "resp_text": OPT_OUT, "country_code": "US"},
-        {"op": "start", "keywords": ["START"], "resp_text": OPT_IN, "country_code": "US"},
+        {"op": "stop", "keywords": ["STOP"], "resp_text": opt_out_text(args.brand), "country_code": "US"},
+        {"op": "start", "keywords": ["START"], "resp_text": opt_in_text(args.brand), "country_code": "US"},
     ]
     if args.help_autoresp:
-        configs.append({"op": "help", "keywords": ["HELP", "INFO"], "resp_text": HELP, "country_code": "US"})
+        configs.append({"op": "help", "keywords": ["HELP", "INFO"], "resp_text": help_text(args.brand, args.contact_email), "country_code": "US"})
 
     have_ops = {
         (c.get("op"), c.get("country_code"))
