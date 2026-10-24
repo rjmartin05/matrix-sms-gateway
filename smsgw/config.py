@@ -153,7 +153,7 @@ def load(path: str) -> Config:
         telnyx_public_key=_env("TELNYX_PUBLIC_KEY") or "",
         telnyx_messaging_profile_id=os.environ.get("TELNYX_MESSAGING_PROFILE_ID") or None,
         webhook_tolerance_seconds=int(get("telnyx", "webhook_tolerance_seconds", 300)),
-        brand=get("compliance", "brand", "Example Chat"),
+        brand=get("compliance", "brand"),  # required: must match the 10DLC registration
         contact_email=get("compliance", "contact_email"),
         rooms=rooms,
         admin_power_level=int(get("matrix", "admin_power_level", 50)),

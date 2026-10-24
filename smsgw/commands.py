@@ -105,7 +105,6 @@ PREFIXED = {
     "YES": _bare("YES"),
 }
 
-HELP_HEADER = "Example Chat commands:"
 HELP_LINES = [
     "#vote 1 - answer latest poll",
     "#dm name msg - private message",
@@ -119,8 +118,8 @@ HELP_LINES = [
 YES_HELP_LINE = "#yes - send your pending DM"
 
 
-def help_text(contact_email: str, *, dm_pending: bool = False) -> str:
-    lines = [HELP_HEADER, *HELP_LINES]
+def help_text(brand: str, contact_email: str, *, dm_pending: bool = False) -> str:
+    lines = [f"{brand} commands:", *HELP_LINES]
     if dm_pending:
         lines.insert(3, YES_HELP_LINE)  # right after the #dm line
     lines.append(f"Questions: {contact_email}")
