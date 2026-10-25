@@ -83,6 +83,11 @@ class Config:
     inbound_media_max_bytes: int
     log_level: str = "INFO"
     extra: dict[str, Any] = field(default_factory=dict)
+    # App login service (D13). Unset = no sign-in code forwarding and no internal API.
+    login_url: str | None = None
+    internal_host: str = "0.0.0.0"
+    internal_port: int = 29344
+    internal_secret: str | None = None
 
 
 def _env(name: str, required: bool = True) -> str | None:
@@ -125,6 +130,9 @@ def load(path: str) -> Config:
         for c in pacing.get("carriers", [])
     ]
     pricing = Pricing(**(y.get("pricing") or {}))
+
+    login_url = get("login", "service_url", None)
+    internal_secret = _env("SMSGW_INTERNAL_SECRET") if y.get("login") else None
 
     poll_style = get("matrix", "poll_style", "unstable")
     if poll_style not in ("stable", "unstable"):
@@ -173,4 +181,8 @@ def load(path: str) -> Config:
         image_max_bytes=int(get("sms", "image_max_bytes", 600_000)),
         inbound_media_max_bytes=int(get("sms", "inbound_media_max_bytes", 5_000_000)),
         log_level=get("logging", "level", "INFO"),
+        login_url=str(login_url).rstrip("/") if login_url else None,
+        internal_host=get("login", "internal_listen_host", "0.0.0.0"),
+        internal_port=int(get("login", "internal_listen_port", 29344)),
+        internal_secret=internal_secret,
     )

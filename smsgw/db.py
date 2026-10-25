@@ -14,7 +14,7 @@ SCHEMA_VERSION = 1
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
--- One row per (room, phone number). status: allowlisted | opted_in | opted_out | removed
+-- One row per (room, phone number). status: allowlisted | opted_in | opted_out | removed | app
 CREATE TABLE IF NOT EXISTS members (
     room_id TEXT NOT NULL,
     number TEXT NOT NULL,

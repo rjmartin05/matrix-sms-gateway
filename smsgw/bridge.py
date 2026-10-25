@@ -15,6 +15,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from typing import Awaitable, Callable
 
 from . import commands, compliance, names, reactions
 from .config import Config
@@ -35,6 +36,7 @@ MAX_LINK_MEDIA_BYTES = 50 * 1024 * 1024
 ALERT_DEBOUNCE = 3600
 PENDING_DM_TTL = 600  # seconds a non-exact #dm waits for #yes
 REACTION_LOOKBACK = 7 * 86400  # how far back a reaction text's quote is matched
+LOGIN_CODE_RE = re.compile(r"sign[- ]?in code:?\s*(\d{6})", re.IGNORECASE)  # the app's "text us" code (D13)
 
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _FILENAME_RE = re.compile(r"^[\w\-. ]+\.(jpe?g|png|gif|heic|webp|mp4|mov|bmp|tiff?)$", re.IGNORECASE)
@@ -151,6 +153,8 @@ class Bridge:
         queue.on_blocked = self.on_send_blocked
         queue.estimate_segments = lambda t: count_segments(t).segments
         queue.on_sent = self.check_spend
+        # Set when the login service is configured: forwards (number, code) from a sign-in text.
+        self.forward_login_code: Callable[[str, str], Awaitable[None]] | None = None
 
     # ---- lifecycle ------------------------------------------------------------------
 
@@ -335,6 +339,28 @@ class Bridge:
         await self.ensure_avatar(member.number, member.display_name)
         await self.mx.join(member.room_id, ghost)
 
+    async def app_user(self, mxid: str, number: str | None) -> None:
+        """The login service says ``mxid`` now uses the app (D13): invite them to the group rooms and,
+        if ``number`` is an SMS member, stop texting it. Idempotent. Texting START or JOIN later
+        turns texts back on."""
+        for room_id in self.number_by_room:
+            await self.mx.invite(room_id, mxid)
+        if not number:
+            return
+        rows = await self.db.fetchall(
+            "SELECT room_id FROM members WHERE number=? AND status IN ('allowlisted', 'opted_in')", (number,))
+        if not rows:
+            return
+        for r in rows:
+            await self.db.set_member_status(r["room_id"], number, "app")
+            try:
+                await self.mx.leave(r["room_id"], self.mx.ghost_mxid(number))
+            except Exception:
+                log.exception("ghost leave failed")
+        skipped = await self.db.skip_pending_for(number, "moved to the app")
+        await self.db.log_consent(number, "moved_to_app", "login", detail=f"{mxid}; {skipped} queued message(s) dropped")
+        log.info("%s moved to the app as %s", number, mxid)
+
     async def on_send_blocked(self, number: str, error: str) -> None:
         """Telnyx refused a send because of an opt-out block we didn't know about."""
         rows = await self.db.fetchall("SELECT status FROM members WHERE number=?", (number,))
@@ -370,9 +396,19 @@ class Bridge:
             await self._handle_autoresponse(msg, room_id, number, member, text)
             return
 
+        # 2. A sign-in code for the app goes to the login service, never to the group, and gets no reply
+        #    (the sender may not have opted in to texts).
+        m = LOGIN_CODE_RE.fullmatch(text) if text and self.forward_login_code else None
+        if m:
+            try:
+                await self.forward_login_code(number, m.group(1))
+            except Exception as e:
+                log.error("forwarding sign-in code failed: %s", e)  # the app times out; they try again
+            return
+
         cmd = commands.parse(text) if text else None
 
-        # 2. Opt-in/out/help keywords Telnyx did *not* flag.
+        # 3. Opt-in/out/help keywords Telnyx did *not* flag.
         if cmd and cmd.name == "STOP":
             await self._opt_out(number, source="bridge", keyword=text, provider_id=msg.provider_id,
                                 detail="no autoresponse_type from Telnyx")
@@ -398,7 +434,7 @@ class Bridge:
                 await self.reply_sms(room_id, number, compliance.help_registered(self.cfg.brand, self.cfg.contact_email), src)
             return
 
-        # 3. Everything else requires an opted-in member.
+        # 4. Everything else requires an opted-in member.
         if member is None or member.status != "opted_in":
             log.info("ignoring message from %s (status %s)", number, member.status if member else "unknown")
             return

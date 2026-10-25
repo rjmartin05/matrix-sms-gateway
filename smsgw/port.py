@@ -21,6 +21,9 @@ class MatrixPort(Protocol):
 
     async def leave(self, room_id: str, mxid: str) -> None: ...
 
+    async def invite(self, room_id: str, mxid: str) -> None:
+        """The bot invites a real user; a no-op if they're already invited or joined."""
+
     async def send_text(
         self,
         room_id: str,

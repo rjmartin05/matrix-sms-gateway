@@ -19,13 +19,14 @@ dev = ["pytest>=8", "pytest-asyncio>=0.24"]
 
 [project.scripts]
 smsgw = "smsgw.__main__:cli"
+smsgw-login = "smsgw.login.__main__:cli"
 
 [build-system]
 requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["smsgw", "smsgw.provider"]
+packages = ["smsgw", "smsgw.provider", "smsgw.login"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
