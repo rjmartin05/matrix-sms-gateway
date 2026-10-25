@@ -8,6 +8,7 @@ to the person.
 - Decisions (and open ones): [docs/DECISIONS.md](docs/DECISIONS.md)
 - What's verified vs. inferred: [docs/VERIFIED.md](docs/VERIFIED.md)
 - Deploy runbook: [docs/DEPLOY.md](docs/DEPLOY.md)
+- Optional app login service (email / phone codes): [docs/LOGIN.md](docs/LOGIN.md)
 
 ## Layout
 
@@ -18,7 +19,8 @@ to the person.
 | `smsgw/commands.py`, `names.py`, `segments.py` | pure parsing/matching/segment logic |
 | `smsgw/provider/telnyx.py` | Telnyx adapter behind `provider/base.py` |
 | `smsgw/matrix.py` | mautrix-python appservice implementation of `port.py` |
-| `smsgw/web.py` | public listener: `/telnyx/webhook`, `/m/<token>`, `/healthz` |
+| `smsgw/web.py` | public listener: `/telnyx/webhook`, `/m/<token>`, `/healthz`; internal listener for the login service |
+| `smsgw/login/` | app login service, its own process (`smsgw-login`); see docs/LOGIN.md |
 | `scripts/` | registration generator, Telnyx profile setup (dry-run default), backup |
 
 ## Dev

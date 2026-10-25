@@ -1,0 +1,42 @@
+# App login service (docs/LOGIN.md). Non-secret settings; secrets go in /matrix/sms-login/.env.
+
+matrix:
+  domain: example.com
+  client_url: https://example.com            # client API for the password login (routed to MAS)
+  public_homeserver_url: https://example.com # what the app is told to use
+
+mas:
+  url: http://matrix-authentication-service:8080/auth   # include MAS's path prefix, if any
+  client_id: PLACEHOLDER_ULID                           # the admin client from LOGIN.md step 1
+
+listen:
+  public_port: 29342               # published on 127.0.0.1 for cloudflared
+  internal_port: 29343             # docker network only; the bridge calls it
+  client_ip_header: CF-Connecting-IP
+
+bridge:
+  url: http://matrix-sms-gateway:29344
+
+storage:
+  database: /data/login.db
+
+codes:
+  sms_number: "+1XXXXXXXXXX"       # PLACEHOLDER: the group's Telnyx number; remove to disable phone codes
+  ttl_minutes: 10
+  max_attempts: 5
+  starts_per_hour: 5               # per email / phone
+  starts_per_hour_ip: 20
+
+email:
+  smtp_host: ""                    # PLACEHOLDER: SMTP relay; empty disables email codes
+  smtp_port: 587
+  starttls: true
+  smtp_username: ""
+  from: "Example Chat <noreply@example.com>"
+
+app:
+  name: Example Chat
+  device_name: Example Chat app
+
+logging:
+  level: INFO

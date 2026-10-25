@@ -1,0 +1,28 @@
+[Unit]
+Description=App login service for the Matrix SMS gateway
+Requires=docker.service
+After=docker.service matrix-authentication-service.service
+Wants=matrix-authentication-service.service
+
+[Service]
+Type=simple
+Environment="HOME=/root"
+ExecStartPre=-/usr/bin/docker stop --time=20 matrix-sms-login
+ExecStartPre=-/usr/bin/docker rm matrix-sms-login
+ExecStart=/usr/bin/docker run --rm --name=matrix-sms-login \
+    --log-driver=none \
+    --network=matrix-homeserver \
+    --publish=127.0.0.1:29342:29342 \
+    --env-file=/matrix/sms-login/.env \
+    --mount type=bind,src=/matrix/sms-login/data,dst=/data \
+    --read-only --tmpfs /tmp \
+    --cap-drop=ALL --security-opt=no-new-privileges \
+    --entrypoint=smsgw-login \
+    matrix-sms-gateway:latest -c /data/login.yaml
+ExecStop=-/usr/bin/docker stop --time=20 matrix-sms-login
+Restart=always
+RestartSec=30
+SyslogIdentifier=matrix-sms-login
+
+[Install]
+WantedBy=multi-user.target

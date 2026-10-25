@@ -150,6 +150,13 @@ class MautrixPort:
         await intent.ensure_registered()
         await intent.ensure_joined(RoomID(room_id))
 
+    async def invite(self, room_id: str, mxid: str) -> None:
+        try:
+            await self.az.intent.invite_user(RoomID(room_id), UserID(mxid))
+        except MForbidden as e:
+            # Normally "already in the room"; anything else (bot lacks invite power) shows up here.
+            log.info("invite of %s to %s refused: %s", mxid, room_id, e)
+
     async def leave(self, room_id: str, mxid: str) -> None:
         try:
             await self.intent(mxid).leave_room(RoomID(room_id))

@@ -118,6 +118,20 @@
   reading of the fuzzy-reply spec; typo thresholds; the new HELP / follow-up texts.
 - **Deploy from `main`.** Alerts go to a private, unencrypted "Gateway Admin" room (DEPLOY.md §7a).
 
+## Decided (2026-10-24)
+
+- **D13 In-app code login for a custom Android app.** A separate login service (same repo, own process
+  and container; [LOGIN.md](LOGIN.md)) signs people up and in with email or phone codes on the app's own
+  screens. Sign-up is gated by the existing join code (a MAS registration token).
+  - Phone codes are verified *inbound* (the person texts a code the app shows), so no code is sent by
+    SMS and the 10DLC campaign is unchanged. Outbound SMS codes would be a separate (2FA) use case.
+  - Sessions come from a random per-login password + `m.login.password` through MAS, because MAS's
+    own login is browser-based and MAS personal sessions can't send messages on Synapse yet.
+  - So only code-managed accounts use codes. Password accounts are untouched unless the person
+    switches (`/v1/switch`, needs their session) or the admin links them.
+  - When a phone member signs in to the app, the bridge stops texting them (status `app`), their ghost
+    leaves, and START/JOIN turns SMS back on.
+
 ## Open
 
 None.

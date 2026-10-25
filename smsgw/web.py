@@ -1,10 +1,12 @@
 """Public HTTP listener (behind the Cloudflare tunnel at sms-hook.*).
 
 Only three routes are exposed: the signed Telnyx webhook, short-lived media, and a health check.
+The internal listener (docker network only) takes calls from the login service.
 """
 
 from __future__ import annotations
 
+import hmac
 import logging
 from typing import Awaitable, Callable
 
@@ -59,4 +61,25 @@ def build_app(db: Database, provider: Provider, on_inbound: Callable[[], Awaitab
     app.router.add_post("/telnyx/webhook", webhook)
     app.router.add_get("/m/{name}", media)
     app.router.add_get("/healthz", health)
+    return app
+
+
+def build_internal_app(on_app_user: Callable[[str, str | None], Awaitable[None]], secret: str) -> web.Application:
+    app = web.Application(client_max_size=16 * 1024)
+
+    async def app_user(request: web.Request) -> web.Response:
+        auth = request.headers.get("Authorization", "")
+        if not hmac.compare_digest(auth, f"Bearer {secret}"):
+            return web.Response(status=401)
+        try:
+            body = await request.json()
+            mxid, number = str(body["mxid"]), body.get("number")
+        except (ValueError, KeyError, TypeError):
+            return web.Response(status=400)
+        if not mxid.startswith("@"):
+            return web.Response(status=400)
+        await on_app_user(mxid, str(number) if number else None)
+        return web.json_response({"ok": True})
+
+    app.router.add_post("/internal/app-user", app_user)
     return app

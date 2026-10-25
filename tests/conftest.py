@@ -51,6 +51,7 @@ class FakePort:
         self.rooms: dict[str, dict[str, str]] = {ROOM: {self.bot_mxid: "SMS Bridge"}}
         self.sent: list[dict] = []
         self.left: list[tuple[str, str]] = []
+        self.invited: list[tuple[str, str]] = []
         self.displaynames: dict[str, str] = {}
         self.power: dict[str, int] = {}
         self.events: dict[str, dict] = {}
@@ -89,6 +90,9 @@ class FakePort:
     async def leave(self, room_id: str, mxid: str) -> None:
         self.rooms.get(room_id, {}).pop(mxid, None)
         self.left.append((room_id, mxid))
+
+    async def invite(self, room_id: str, mxid: str) -> None:
+        self.invited.append((room_id, mxid))
 
     def _new_event(self, room_id, sender, etype, content) -> str:
         eid = f"$e{next(self._ids)}"

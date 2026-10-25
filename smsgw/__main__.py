@@ -8,6 +8,7 @@ import logging
 import os
 import signal
 
+import aiohttp
 from aiohttp import web
 
 from . import config as config_mod
@@ -17,7 +18,7 @@ from .matrix import MautrixPort
 from .media import MediaStore
 from .outbound import OutboundQueue
 from .provider.telnyx import TelnyxProvider
-from .web import build_app
+from .web import build_app, build_internal_app
 
 log = logging.getLogger("smsgw")
 
@@ -71,6 +72,24 @@ async def main(config_path: str) -> None:
         cfg.appservice_host, cfg.appservice_port, cfg.public_host, cfg.public_port, cfg.public_base_url,
     )
 
+    internal = None
+    if cfg.internal_secret:
+        internal = web.AppRunner(build_internal_app(bridge.app_user, cfg.internal_secret))
+        await internal.setup()
+        await web.TCPSite(internal, cfg.internal_host, cfg.internal_port).start()
+    login_http = None
+    if cfg.login_url:
+        login_http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10))
+        login_url, secret = f"{cfg.login_url}/internal/sms-code", cfg.internal_secret
+
+        async def forward_login_code(number: str, code: str) -> None:
+            async with login_http.post(login_url, json={"number": number, "code": code},
+                                       headers={"Authorization": f"Bearer {secret}"}) as r:
+                r.raise_for_status()
+                log.info("sign-in code from %s %s", number, "matched" if (await r.json()).get("matched") else "unmatched")
+
+        bridge.forward_login_code = forward_login_code
+
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -86,6 +105,8 @@ async def main(config_path: str) -> None:
     log.info("shutting down")
     # Stop intake first, then let workers finish their current item.
     await public.cleanup()
+    if internal:
+        await internal.cleanup()
     await port.stop()
     queue.stop()
     bridge.stop()
@@ -93,6 +114,8 @@ async def main(config_path: str) -> None:
     for t in pending:
         t.cancel()
     await provider.close()
+    if login_http:
+        await login_http.close()
     await db.close()
 
 

@@ -75,5 +75,10 @@ pricing:                           # for !sms status estimates and the spend ale
   daily_spend_limit: 15.00         # keep equal to the Telnyx profile's daily_spend_limit (D8)
   daily_spend_alert_fraction: 0.6  # alert in matrix.alerts_room at ~60% of the limit (estimated, UTC day)
 
+# App login service (docs/LOGIN.md). Leave out to disable. Needs SMSGW_INTERNAL_SECRET in .env.
+# login:
+#   service_url: http://matrix-sms-login:29343   # where sign-in code texts are forwarded
+#   internal_listen_port: 29344                  # the login service calls this (docker network only)
+
 logging:
   level: INFO
