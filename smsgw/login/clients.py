@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import smtplib
+import ssl
 import time
 from email.message import EmailMessage
 from urllib.parse import quote
@@ -126,7 +127,7 @@ class Mailer:
     def _send(self, msg: EmailMessage) -> None:
         with smtplib.SMTP(self.host, self.port, timeout=20) as s:
             if self.starttls:
-                s.starttls()
+                s.starttls(context=ssl.create_default_context())
             if self.username:
                 s.login(self.username, self.password or "")
             s.send_message(msg)

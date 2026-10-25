@@ -1,5 +1,6 @@
 """App login service (D13) against fake MAS / Matrix / SMTP, plus the bridge's side of it."""
 
+import asyncio
 import itertools
 import re
 
@@ -230,6 +231,26 @@ async def test_wrong_codes_lock_the_request(svc):
     with pytest.raises(ServiceError) as e:
         await svc.verify_code(v["verification_id"], code)
     assert e.value.code == "expired"
+
+
+async def test_concurrent_guesses_are_bounded(svc):
+    v = await svc.start_signup({"display_name": "Dave", "email": EMAIL, "join_token": TOKEN}, None)
+    code = svc.mailer.last_code()
+    wrong = [f"{(int(code) + i) % 10**6:06d}" for i in range(1, 11)]
+    results = await asyncio.gather(*(svc.verify_code(v["verification_id"], w) for w in wrong),
+                                   return_exceptions=True)
+    assert all(isinstance(r, ServiceError) for r in results)
+    assert (await svc.db.get_verification(v["verification_id"]))["attempts"] == 3
+
+
+async def test_upstream_failure_is_json(svc):
+    async def broken(token):
+        raise KeyError("data")
+
+    svc.mas.registration_token_valid = broken
+    async with TestClient(TestServer(build_public_app(svc, None))) as c:
+        r = await c.post("/v1/signup", json={"display_name": "Dave", "email": EMAIL, "join_token": TOKEN})
+        assert r.status == 503 and (await r.json())["error"] == "try_again"
 
 
 async def test_code_expires(svc):

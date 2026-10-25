@@ -175,12 +175,18 @@ class LoginService:
         if v["channel"] != "email":
             raise ServiceError(400, "wrong_channel", "Text the code to us instead.")
         if v["status"] == "pending":
-            if not hmac.compare_digest(self._hash(vid, str(code).strip()), v["code_hash"]):
-                if await self.db.bump_attempts(vid) >= self.cfg.code_max_attempts:
+            n = await self.db.claim_attempt(vid, self.cfg.code_max_attempts)
+            if n is None:
+                if (await self._live(vid))["status"] != "verified":  # else a concurrent request won
+                    await self.db.transition(vid, "pending", "failed")
+                    raise ServiceError(429, "too_many_attempts", "Too many wrong codes. Start again.")
+            elif not hmac.compare_digest(self._hash(vid, str(code).strip()), v["code_hash"]):
+                if n >= self.cfg.code_max_attempts:
                     await self.db.transition(vid, "pending", "failed")
                     raise ServiceError(429, "too_many_attempts", "Too many wrong codes. Start again.")
                 raise ServiceError(400, "wrong_code", "That code isn't right.")
-            await self.db.transition(vid, "pending", "verified")
+            else:
+                await self.db.transition(vid, "pending", "verified")
         return await self._complete(vid)
 
     async def sms_code(self, number: str, code: str) -> bool:
@@ -190,8 +196,11 @@ class LoginService:
         if row is None or self.now() > row["expires_at"]:
             log.info("sms code from unknown or expired request")
             return False
+        n = await self.db.claim_attempt(row["id"], self.cfg.code_max_attempts)
+        if n is None:
+            return False
         if not hmac.compare_digest(self._hash(row["id"], code), row["code_hash"]):
-            if await self.db.bump_attempts(row["id"]) >= self.cfg.code_max_attempts:
+            if n >= self.cfg.code_max_attempts:
                 await self.db.transition(row["id"], "pending", "failed")
             return False
         return await self.db.transition(row["id"], "pending", "verified")

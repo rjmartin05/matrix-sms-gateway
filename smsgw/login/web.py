@@ -50,6 +50,12 @@ def build_public_app(svc: LoginService, client_ip_header: str | None) -> web.App
                 return web.json_response(await fn(request))
             except ServiceError as e:
                 return _json_error(e)
+            except web.HTTPException:
+                raise  # e.g. 413 from client_max_size
+            except Exception:
+                # MAS / Synapse down or returning something unexpected: keep the JSON contract.
+                log.exception("%s %s failed", request.method, request.path)
+                return _json_error(ServiceError(503, "try_again", "The server is busy. Try again in a minute."))
         return wrapped
 
     @handler

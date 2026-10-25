@@ -115,10 +115,17 @@ class LoginDB:
             (identifier, channel),
         )
 
-    async def bump_attempts(self, vid: str) -> int:
-        await self.execute("UPDATE verifications SET attempts=attempts+1 WHERE id=?", (vid,))
+    async def claim_attempt(self, vid: str, limit: int) -> int | None:
+        """Reserve one guess before comparing, so concurrent guesses can't exceed ``limit``.
+        Returns the attempt number, or None if the request isn't pending or is used up."""
+        cur = await self.execute(
+            "UPDATE verifications SET attempts=attempts+1 WHERE id=? AND status='pending' AND attempts<?",
+            (vid, limit),
+        )
+        if cur.rowcount != 1:
+            return None
         row = await self.get_verification(vid)
-        return row["attempts"] if row else 0
+        return row["attempts"] if row else None
 
     async def transition(self, vid: str, old: str, new: str) -> bool:
         """Atomic status change; False if another request got there first."""
