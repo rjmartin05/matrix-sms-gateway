@@ -1090,7 +1090,7 @@ class Bridge:
             lines = ["!dm Name - open an unencrypted chat with an SMS member"]
             if self.cfg.members_can_add and not is_admin:
                 lines += ["!sms add +1XXXXXXXXXX Full Name - add someone by text",
-                          "!sms remove +1XXXXXXXXXX - remove someone you added"]
+                          "!sms remove +1XXXXXXXXXX - remove someone you added who hasn't joined yet"]
             if is_admin:
                 lines += [
                     "!sms add +1XXXXXXXXXX Full Name - allow a number",
@@ -1217,13 +1217,15 @@ class Bridge:
                                   "Nothing is sent to them until they do."}
 
     async def remove_sms_member(self, room_id: str, by: str, number: str) -> dict:
-        """Admins can remove anyone; members only people they added (D14). Nothing is texted to them."""
+        """Admins can remove anyone; members only people they added who haven't joined yet (D14), e.g.
+        a wrong number. Nothing is texted to them."""
         m = await self.db.get_member(room_id, number)
         if m is None or m.status == "removed":
             return {"ok": False, "error": "not_found", "message": "That number isn't on the list."}
-        if not (await self._is_admin(room_id, by) or m.added_by == by):
+        if not (await self._is_admin(room_id, by) or self._can_retract(m, by)):
             return {"ok": False, "error": "forbidden",
-                    "message": "Only an admin or the person who added them can remove them."}
+                    "message": "Only an admin can remove someone who has joined. "
+                               "You can remove people you added until they reply JOIN."}
         if m.status == "app":
             return {"ok": False, "error": "uses_app",
                     "message": f"{m.display_name} uses the app now. Remove them from the room instead."}
@@ -1258,6 +1260,10 @@ class Bridge:
             return await self.add_sms_member(room_id, by, number, str(body.get("name") or ""))
         return await self.remove_sms_member(room_id, by, number)
 
+    @staticmethod
+    def _can_retract(m: Member, by: str) -> bool:
+        return m.added_by == by and m.status == "allowlisted" and not m.ever_joined
+
     async def list_sms_members(self, room_id: str, by: str) -> list[dict]:
         """For the app's member screen: everyone on the SMS list, and whether ``by`` may remove them."""
         is_admin = await self._is_admin(room_id, by)
@@ -1265,9 +1271,10 @@ class Bridge:
         for m in await self.db.members(room_id):
             if m.status not in SMS_STATUSES:
                 continue
-            mine = is_admin or m.added_by == by
             # Numbers stay private, as in the group itself: only admins and whoever added someone see it.
-            out.append({"mxid": m.mxid, "name": m.display_name, "status": m.status, "can_remove": mine,
+            mine = is_admin or m.added_by == by
+            out.append({"mxid": m.mxid, "name": m.display_name, "status": m.status,
+                        "can_remove": is_admin or self._can_retract(m, by),
                         **({"number": m.number} if mine else {})})
         return out
 

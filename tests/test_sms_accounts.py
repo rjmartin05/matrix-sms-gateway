@@ -91,7 +91,7 @@ async def test_no_invite_text_to_a_number_that_opted_out(acc):
     await app_add(acc, ALICE, DAVE, "Dave Miller")
     await acc.sms(DAVE, "JOIN")
     await acc.sms(DAVE, "STOP")
-    await app_remove(acc, ALICE, DAVE)
+    await app_remove(acc, ADMIN, DAVE)
     acc.provider.sent.clear()
     res = await app_add(acc, BOB, DAVE, "Dave Miller")
     await acc.drain()
@@ -104,6 +104,18 @@ async def test_invite_text_not_sent_once_removed(acc):
     await app_remove(acc, ALICE, DAVE)
     await acc.drain()
     assert texts_to(acc, DAVE) == []
+
+
+async def test_adder_can_remove_only_until_they_join(acc):
+    await app_add(acc, ALICE, SUE, "Sue")
+    await acc.sms(SUE, "JOIN")
+    with pytest.raises(ServiceError) as e:
+        await app_remove(acc, ALICE, SUE)  # joined: admins only
+    assert e.value.status == 403 and "Only an admin" in e.value.message
+    acc.svc.matrix.tokens["tok-a"] = ALICE
+    listed = {m["name"]: m for m in (await acc.svc.sms_members("tok-a", "list", {"room_id": ROOM}))["members"]}
+    assert not listed["Sue"]["can_remove"]
+    assert (await app_remove(acc, ADMIN, SUE))["ok"]
 
 
 async def test_only_admin_or_adder_can_remove(acc):
@@ -210,7 +222,7 @@ async def test_members_can_add_with_a_command_too(acc):
     assert "They got a text" in acc.port.sent[-1]["content"]["body"]
     await acc.matrix({"type": "m.room.message", "sender": BOB,
                       "content": {"msgtype": "m.text", "body": f"!sms remove {DAVE}"}})
-    assert "Only an admin or the person who added them" in acc.port.sent[-1]["content"]["body"]
+    assert "Only an admin can remove someone who has joined" in acc.port.sent[-1]["content"]["body"]
     await acc.matrix({"type": "m.room.message", "sender": BOB, "content": {"msgtype": "m.text", "body": "!sms list"}})
     assert acc.port.sent[-1]["content"]["body"] == "Admins only."
 

@@ -20,7 +20,8 @@ With `appservice.sms_accounts: true` an SMS member is an ordinary account instea
 
 - Any member of the group room can add someone (`matrix.members_can_add`, default true), from the app or
   with `!sms add +1XXXXXXXXXX Full Name`. Non-admins can add `matrix.adds_per_day` people a day (20).
-- Admins can remove anyone; others only the people they added (`!sms remove +1XXXXXXXXXX`, or the app).
+- Admins can remove anyone. Others can remove people they added only until those people reply JOIN
+  (a wrong number, say); after that it takes an admin (`!sms remove +1XXXXXXXXXX`, or the app).
   A removed member who never used the app can no longer sign in with their number; re-adding them
   reuses the same account.
 - Numbers are shown only to admins and to whoever added that person.

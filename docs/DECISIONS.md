@@ -139,7 +139,7 @@
     (`@dave.miller`, not `@sms_<digits>`), and the bridge posts as it through a non-exclusive appservice
     namespace. Switching to the app means signing in to that same account.
   - Display names are plain; the app tags SMS members from a room state event.
-  - Members add people from the app or `!sms add`; admins or whoever added someone can remove them.
+  - Members add people from the app or `!sms add`; admins can remove anyone; whoever added someone can remove them only until they JOIN.
   - An optional one-time invite text (`compliance.invite_text`) goes out when someone is added. This
     relaxes the "never text first" rule (BRIEF §4) for that one message, once the 10DLC campaign is
     updated to cover it. Without it, nothing is sent until they text JOIN.
