@@ -447,3 +447,201 @@ async def test_bridge_internal_http(env):
                          headers={"Authorization": f"Bearer {SECRET}"})
         assert r.status == 200
     assert env.port.invited == [(ROOM, "@new:example.org")]
+
+
+# ---- invite links -----------------------------------------------------------------------
+
+import dataclasses  # noqa: E402
+
+PKG = "com.example.groupchat"
+CERT = "AB:CD:" + ":".join(["00"] * 30)
+
+
+@pytest_asyncio.fixture
+async def isvc(svc):
+    svc.cfg = dataclasses.replace(svc.cfg, public_url="https://login.example.org", android_package=PKG,
+                                  android_cert_sha256=[CERT])
+    return svc
+
+
+async def invite_signup(svc, code, email=EMAIL, name="Dave Miller"):
+    v = await svc.start_signup({"display_name": name, "email": email, "invite": code}, None)
+    return await svc.verify_code(v["verification_id"], svc.mailer.last_code())
+
+
+async def test_invite_link_signs_up_once(isvc):
+    inv = await isvc.create_invite("@ryan:example.org", "Dave")
+    assert inv["url"] == f"https://login.example.org/join/{inv['code']}" and len(inv["code"]) >= 20
+    sess = await invite_signup(isvc, inv["code"])
+    assert sess["user_id"] == "@dave.miller:example.org"
+    row = await isvc.db.fetchone("SELECT * FROM invites")
+    assert row["used_by"] == "@dave.miller:example.org" and row["created_by"] == "@ryan:example.org"
+    assert inv["code"] not in str(dict(row).values())  # only a hash is stored
+    with pytest.raises(ServiceError) as e:
+        await isvc.start_signup({"display_name": "Eve", "email": "eve@example.net", "invite": inv["code"]}, None)
+    assert e.value.code == "bad_invite"
+
+
+async def test_invite_not_burned_by_failed_verification(isvc):
+    inv = await isvc.create_invite(None)
+    v = await isvc.start_signup({"display_name": "Dave", "email": EMAIL, "invite": inv["code"]}, None)
+    for _ in range(3):
+        with pytest.raises(ServiceError):
+            await isvc.verify_code(v["verification_id"], "000000")
+    sess = await invite_signup(isvc, inv["code"])  # same link still works
+    assert sess["user_id"] == "@dave.miller:example.org"
+
+
+async def test_invite_race_only_one_account(isvc):
+    inv = await isvc.create_invite(None)
+    a = await isvc.start_signup({"display_name": "Dave", "email": EMAIL, "invite": inv["code"]}, None)
+    code_a = isvc.mailer.last_code()
+    b = await isvc.start_signup({"display_name": "Eve", "email": "eve@example.net", "invite": inv["code"]}, None)
+    code_b = isvc.mailer.last_code()
+    await isvc.verify_code(a["verification_id"], code_a)
+    with pytest.raises(ServiceError) as e:
+        await isvc.verify_code(b["verification_id"], code_b)
+    assert e.value.code == "bad_invite"
+    assert "eve" not in isvc.mas.users
+
+
+async def test_invite_retry_after_upstream_failure_reuses_invite(isvc):
+    inv = await isvc.create_invite(None)
+    v = await isvc.start_signup({"display_name": "Dave", "email": EMAIL, "invite": inv["code"]}, None)
+    code = isvc.mailer.last_code()
+    isvc.matrix.fail_next = 1
+    with pytest.raises(ServiceError) as e:
+        await isvc.verify_code(v["verification_id"], code)
+    assert e.value.code == "try_again"
+    sess = await isvc.verify_code(v["verification_id"], code)
+    assert sess["user_id"] == "@dave:example.org"
+    assert (await isvc.db.fetchone("SELECT used_by FROM invites"))["used_by"] == "@dave:example.org"
+
+
+async def test_invite_expires(isvc):
+    inv = await isvc.create_invite(None)
+    isvc.now.t += 7 * 86400 + 1
+    with pytest.raises(ServiceError) as e:
+        await isvc.start_signup({"display_name": "Dave", "email": EMAIL, "invite": inv["code"]}, None)
+    assert e.value.code == "bad_invite"
+
+
+async def test_shared_join_token_can_be_turned_off(isvc):
+    isvc.cfg = dataclasses.replace(isvc.cfg, allow_join_token=False)
+    with pytest.raises(ServiceError) as e:
+        await isvc.start_signup({"display_name": "Dave", "email": EMAIL, "join_token": TOKEN}, None)
+    assert e.value.code == "bad_invite"
+    inv = await isvc.create_invite(None)
+    assert (await invite_signup(isvc, inv["code"]))["user_id"]
+
+
+async def test_invites_need_public_url(svc):
+    with pytest.raises(ServiceError) as e:
+        await svc.create_invite(None)
+    assert e.value.code == "invites_disabled"
+    svc.cfg = dataclasses.replace(svc.cfg, public_url="https://login.example.org")  # no app to open the link
+    with pytest.raises(ServiceError) as e:
+        await svc.create_invite(None)
+    assert e.value.code == "invites_disabled"
+
+
+async def test_invite_released_when_no_account_made(isvc, monkeypatch):
+    inv = await isvc.create_invite(None)
+    real = isvc._create_user
+
+    async def no_username(name):
+        raise ServiceError(409, "no_username", "Couldn't pick a username.")
+
+    monkeypatch.setattr(isvc, "_create_user", no_username)
+    with pytest.raises(ServiceError) as e:
+        await invite_signup(isvc, inv["code"])
+    assert e.value.code == "no_username"
+    monkeypatch.setattr(isvc, "_create_user", real)
+    assert (await invite_signup(isvc, inv["code"]))["user_id"] == "@dave.miller:example.org"
+
+
+async def test_join_page_and_assetlinks(isvc):
+    async with TestClient(TestServer(build_public_app(isvc, None))) as c:
+        r = await c.get("/join/AbCdEf_123-xyzXYZ")
+        page = await r.text()
+        assert r.status == 200 and r.headers["Content-Type"].startswith("text/html")
+        assert f"market://details?id={PKG}&referrer=invite%3DAbCdEf_123-xyzXYZ" in page
+        assert f"https://play.google.com/store/apps/details?id={PKG}&amp;referrer=invite%3DAbCdEf_123-xyzXYZ" in page
+        assert r.headers["Cache-Control"] == "no-store"
+        assert (await c.get("/join/<script>")).status == 404
+        r = await c.get("/.well-known/assetlinks.json")
+        links = await r.json()
+        assert links[0]["target"] == {"namespace": "android_app", "package_name": PKG,
+                                      "sha256_cert_fingerprints": [CERT]}
+        assert "delegate_permission/common.handle_all_urls" in links[0]["relation"]
+
+
+async def test_join_page_off_without_package(svc):
+    async with TestClient(TestServer(build_public_app(svc, None))) as c:
+        assert (await c.get("/join/AbCdEf_123-xyzXYZ")).status == 404
+        assert (await c.get("/.well-known/assetlinks.json")).status == 404
+
+
+async def test_internal_invites_endpoint(isvc):
+    async with TestClient(TestServer(build_internal_app(isvc, SECRET))) as c:
+        assert (await c.post("/internal/invites", json={})).status == 401
+        r = await c.post("/internal/invites", json={"created_by": "@ryan:example.org", "note": "Sue"},
+                         headers={"Authorization": f"Bearer {SECRET}"})
+        inv = await r.json()
+        assert r.status == 200 and inv["url"].startswith("https://login.example.org/join/")
+    assert (await invite_signup(isvc, inv["code"]))["user_id"]
+
+
+async def test_db_migration_adds_invite_column(tmp_path):
+    import aiosqlite
+    path = str(tmp_path / "old.db")
+    async with aiosqlite.connect(path) as conn:  # a login.db from before invites existed
+        await conn.execute("CREATE TABLE verifications (id TEXT PRIMARY KEY, purpose TEXT, channel TEXT,"
+                           " identifier TEXT, code_hash TEXT, mxid TEXT, display_name TEXT, status TEXT,"
+                           " attempts INTEGER, created_at REAL, expires_at REAL)")
+        await conn.commit()
+    db = LoginDB(path)
+    await db.open()
+    cols = [r["name"] for r in await (await db.conn.execute("PRAGMA table_info(verifications)")).fetchall()]
+    assert "invite_hash" in cols
+    await db.close()
+
+
+# ---- bridge !invite ---------------------------------------------------------------------
+
+async def test_bridge_invite_command(env):
+    made = []
+
+    async def create(by, note):
+        made.append((by, note))
+        return {"url": "https://login.example.org/join/abc", "expires_at": 2_000_000_000}
+
+    env.bridge.create_invite = create
+    env.port.power[ADMIN] = 100
+    await env.matrix({"type": "m.room.message", "sender": ADMIN, "room_id": ROOM,
+                      "content": {"msgtype": "m.text", "body": "!invite Sue"}})
+    assert made == [] and "private chat" in env.port.sent[-1]["content"]["body"]  # never in the group
+    await env.matrix({"type": "m.room.message", "sender": ADMIN, "room_id": "!botdm:example.org",
+                      "content": {"msgtype": "m.text", "body": "!invite Sue"}})
+    assert made == [(ADMIN, "Sue")]
+    reply = env.port.sent[-1]
+    assert reply["room_id"] == "!botdm:example.org" and "https://login.example.org/join/abc" in reply["content"]["body"]
+    await env.matrix({"type": "m.room.message", "sender": "@rando:example.org", "room_id": "!botdm2:example.org",
+                      "content": {"msgtype": "m.text", "body": "!invite"}})
+    assert env.port.sent[-1]["content"]["body"] == "Admins only." and len(made) == 1
+    # A side room with someone else in it is not private.
+    env.port.rooms["!side:example.org"] = {ADMIN: "Admin", "@bob:example.org": "Bob", env.port.bot_mxid: "bot"}
+    await env.matrix({"type": "m.room.message", "sender": ADMIN, "room_id": "!side:example.org",
+                      "content": {"msgtype": "m.text", "body": "!invite"}})
+    assert "private chat" in env.port.sent[-1]["content"]["body"] and len(made) == 1
+    env.bridge.cfg.alerts_room = "!side:example.org"  # ...unless it's the admin room
+    await env.matrix({"type": "m.room.message", "sender": ADMIN, "room_id": "!side:example.org",
+                      "content": {"msgtype": "m.text", "body": "!invite"}})
+    assert len(made) == 2
+
+
+async def test_bridge_invite_without_login_service(env):
+    env.port.power[ADMIN] = 100
+    await env.matrix({"type": "m.room.message", "sender": ADMIN, "room_id": "!botdm:example.org",
+                      "content": {"msgtype": "m.text", "body": "!invite"}})
+    assert "login service" in env.port.sent[-1]["content"]["body"]

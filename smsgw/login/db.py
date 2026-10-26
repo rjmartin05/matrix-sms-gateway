@@ -40,6 +40,19 @@ CREATE TABLE IF NOT EXISTS verifications (
 );
 CREATE INDEX IF NOT EXISTS verifications_identifier ON verifications (identifier, status);
 
+-- One-time invite links. Only a hash of the code is stored. used_vid ties a use to one verification,
+-- so a retry of the same sign-up isn't refused.
+CREATE TABLE IF NOT EXISTS invites (
+    code_hash TEXT PRIMARY KEY,
+    created_by TEXT,
+    note TEXT,
+    created_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    used_at REAL,
+    used_vid TEXT,
+    used_by TEXT
+);
+
 -- Code requests, for rate limiting. key is "id:<identifier>" or "ip:<address>".
 CREATE TABLE IF NOT EXISTS starts (key TEXT NOT NULL, ts REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS starts_key ON starts (key, ts);
@@ -56,6 +69,11 @@ class LoginDB:
         self.conn.row_factory = aiosqlite.Row
         await self.conn.execute("PRAGMA journal_mode=WAL")
         await self.conn.executescript(SCHEMA)
+        # Columns added after the first release (CREATE TABLE IF NOT EXISTS doesn't add them).
+        async with self.conn.execute("PRAGMA table_info(verifications)") as cur:
+            cols = {r["name"] for r in await cur.fetchall()}
+        if "invite_hash" not in cols:
+            await self.conn.execute("ALTER TABLE verifications ADD COLUMN invite_hash TEXT")
         await self.conn.commit()
 
     async def close(self) -> None:
@@ -93,7 +111,8 @@ class LoginDB:
     # ---- verifications ---------------------------------------------------------------
 
     async def add_verification(self, vid: str, purpose: str, channel: str, identifier: str, code_hash: str,
-                               expires_at: float, *, mxid: str | None = None, display_name: str | None = None) -> None:
+                               expires_at: float, *, mxid: str | None = None, display_name: str | None = None,
+                               invite_hash: str | None = None) -> None:
         # A new request replaces any earlier pending one for the same identifier.
         await self.execute(
             "UPDATE verifications SET status='failed' WHERE identifier=? AND status IN ('pending', 'verified')",
@@ -101,8 +120,8 @@ class LoginDB:
         )
         await self.execute(
             "INSERT INTO verifications (id, purpose, channel, identifier, code_hash, mxid, display_name,"
-            " created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (vid, purpose, channel, identifier, code_hash, mxid, display_name, time.time(), expires_at),
+            " invite_hash, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (vid, purpose, channel, identifier, code_hash, mxid, display_name, invite_hash, time.time(), expires_at),
         )
 
     async def get_verification(self, vid: str) -> aiosqlite.Row | None:
@@ -131,6 +150,36 @@ class LoginDB:
         """Atomic status change; False if another request got there first."""
         cur = await self.execute("UPDATE verifications SET status=? WHERE id=? AND status=?", (new, vid, old))
         return cur.rowcount == 1
+
+    # ---- invites ---------------------------------------------------------------------
+
+    async def add_invite(self, code_hash: str, created_by: str | None, note: str | None, now: float,
+                         expires_at: float) -> None:
+        await self.execute(
+            "INSERT INTO invites (code_hash, created_by, note, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+            (code_hash, created_by, note, now, expires_at),
+        )
+
+    async def live_invite(self, code_hash: str, now: float) -> aiosqlite.Row | None:
+        return await self.fetchone(
+            "SELECT * FROM invites WHERE code_hash=? AND used_at IS NULL AND expires_at>?", (code_hash, now)
+        )
+
+    async def use_invite(self, code_hash: str, vid: str, now: float) -> bool:
+        """Atomically spend an invite for verification ``vid``; True again for the same vid (retries)."""
+        cur = await self.execute(
+            "UPDATE invites SET used_at=?, used_vid=? WHERE code_hash=? AND expires_at>?"
+            " AND (used_at IS NULL OR used_vid=?)",
+            (now, vid, code_hash, now, vid),
+        )
+        return cur.rowcount == 1
+
+    async def release_invite(self, code_hash: str, vid: str) -> None:
+        await self.execute("UPDATE invites SET used_at=NULL, used_vid=NULL WHERE code_hash=? AND used_vid=?"
+                           " AND used_by IS NULL", (code_hash, vid))
+
+    async def set_invite_user(self, code_hash: str, mxid: str) -> None:
+        await self.execute("UPDATE invites SET used_by=? WHERE code_hash=?", (mxid, code_hash))
 
     # ---- rate limiting ---------------------------------------------------------------
 
