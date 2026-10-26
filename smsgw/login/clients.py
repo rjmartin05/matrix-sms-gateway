@@ -140,14 +140,22 @@ class Mailer:
 
 
 class BridgeNotifier:
-    """Tells the bridge a person now uses the app: invite them, and stop SMS to their number."""
+    """The bridge's internal API: a person now uses the app (invite them, stop SMS to their number),
+    and the SMS member list the app shows (D14)."""
 
     def __init__(self, session: aiohttp.ClientSession, bridge_url: str, secret: str) -> None:
         self.http = session
-        self.url = f"{bridge_url.rstrip('/')}/internal/app-user"
+        self.base = bridge_url.rstrip("/")
+        self.url = f"{self.base}/internal/app-user"
         self.secret = secret
 
     async def app_user(self, mxid: str, number: str | None) -> None:
         async with self.http.post(self.url, json={"mxid": mxid, "number": number},
                                   headers={"Authorization": f"Bearer {self.secret}"}) as r:
             await _check(r, "bridge app-user")
+
+    async def sms_members(self, action: str, body: dict) -> dict:
+        """action: list | add | remove. The bridge checks the caller (body["by"]) itself."""
+        async with self.http.post(f"{self.base}/internal/sms-members/{action}", json=body,
+                                  headers={"Authorization": f"Bearer {self.secret}"}) as r:
+            return await _check(r, f"bridge sms-members {action}")

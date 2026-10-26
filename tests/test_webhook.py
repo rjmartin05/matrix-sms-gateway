@@ -41,7 +41,7 @@ async def test_signed_webhook_is_persisted_once(env, keypair):
         # Inbox processing runs the full flow (not allowlisted -> polite refusal).
         await env.bridge._process_inbound_row(rows[0])
         await env.drain()
-        assert env.provider.sent[-1]["text"] == "Ask the group admin to add your number."
+        assert env.provider.sent[-1]["text"] == "Ask someone in the group to add your number."
     await provider.close()
 
 

@@ -56,7 +56,7 @@ async def main(config_path: str) -> None:
     bridge = Bridge(cfg, db, port, provider, queue, media)
 
     async def on_matrix_event(evt: dict) -> None:
-        if not bridge.wants_matrix_event(evt):
+        if not await bridge.wants_matrix_event(evt):
             return
         if await db.add_matrix_event(evt["event_id"], evt.get("room_id", ""), evt):
             bridge.matrix_wakeup.set()
@@ -74,7 +74,7 @@ async def main(config_path: str) -> None:
 
     internal = None
     if cfg.internal_secret:
-        internal = web.AppRunner(build_internal_app(bridge.app_user, cfg.internal_secret))
+        internal = web.AppRunner(build_internal_app(bridge.app_user, cfg.internal_secret, bridge.sms_members_api))
         await internal.setup()
         await web.TCPSite(internal, cfg.internal_host, cfg.internal_port).start()
     login_http = None
@@ -98,6 +98,23 @@ async def main(config_path: str) -> None:
                 return await r.json()
 
         bridge.create_invite = create_invite
+
+        if cfg.sms_accounts:
+            accounts_url = f"{cfg.login_url}/internal/sms-accounts"
+
+            async def sms_account(name: str, number: str) -> dict:
+                async with login_http.post(accounts_url, json={"name": name, "number": number},
+                                           headers={"Authorization": f"Bearer {secret}"}) as r:
+                    r.raise_for_status()
+                    return await r.json()
+
+            async def drop_sms_account(mxid: str) -> None:
+                async with login_http.post(f"{accounts_url}/drop", json={"mxid": mxid},
+                                           headers={"Authorization": f"Bearer {secret}"}) as r:
+                    r.raise_for_status()
+
+            bridge.sms_account = sms_account
+            bridge.drop_sms_account = drop_sms_account
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()

@@ -131,8 +131,13 @@ class LoginService:
         name = " ".join(str(body.get("display_name") or "").split())[:MAX_NAME]
         if not name:
             raise ServiceError(400, "bad_name", "Enter your name.")
+        existing = await self.db.account_by(ident.field, ident.value)
+        if existing is not None and existing["sms_status"] == "sms":
+            # Someone in the group added this number (D14): they already have an account; this just
+            # signs them in to it. No invite needed, and the name they typed doesn't replace theirs.
+            return await self._issue("login", ident, ip, mxid=existing["mxid"])
         invite_hash = await self._check_join(body)
-        if await self.db.account_by(ident.field, ident.value):
+        if existing is not None:
             raise ServiceError(409, "already_registered", "That's already registered. Sign in instead.")
         return await self._issue("signup", ident, ip, display_name=name, invite_hash=invite_hash)
 
@@ -172,7 +177,7 @@ class LoginService:
     async def start_login(self, body: dict, ip: str | None) -> dict:
         ident = self.identifier(body)
         acct = await self.db.account_by(ident.field, ident.value)
-        if acct is None or not acct["code_managed"]:
+        if acct is None or not acct["code_managed"] or acct["sms_status"] == "removed":
             raise ServiceError(404, "no_account", "No account signs in with that. Sign up, or use your password.")
         return await self._issue("login", ident, ip, mxid=acct["mxid"])
 
@@ -287,8 +292,12 @@ class LoginService:
             user_id = acct["mas_user_id"] if acct else await self.mas.user_by_username(username)
             if user_id is None:
                 raise ServiceError(404, "no_account", "That account no longer exists.")
+            if acct is not None and acct["sms_status"] == "removed":
+                raise ServiceError(404, "no_account", "That account no longer exists.")
             # switch: from here on the old password stops working; codes are the way in.
-            await self.db.upsert_account(mxid, user_id, username, code_managed=1, **{ident.field: ident.value})
+            # An SMS member's account (D14) becomes an ordinary app account at its first sign-in.
+            await self.db.upsert_account(mxid, user_id, username, code_managed=1, sms_status=None,
+                                         **{ident.field: ident.value})
         if ident.channel == "email":
             await self.mas.add_email(user_id, ident.value)
 
@@ -330,6 +339,54 @@ class LoginService:
                     continue
                 raise
         raise ServiceError(409, "no_username", "Couldn't pick a username. Ask the group admin.")
+
+    # ---- SMS members (D14) ------------------------------------------------------------
+
+    async def sms_account(self, name: str, number: str) -> dict:
+        """The bridge is adding ``number``: return the account it should post as, creating one if
+        needed. app_user=True means the number already belongs to someone using the app."""
+        number = normalize_number(number) or number
+        acct = await self.db.account_by("phone", number)
+        if acct is not None:
+            if acct["sms_status"] is None:
+                return {"mxid": acct["mxid"], "app_user": True}
+            await self.db.upsert_account(acct["mxid"], acct["mas_user_id"], acct["username"], sms_status="sms")
+            return {"mxid": acct["mxid"], "app_user": False}
+        name = " ".join(name.split())[:MAX_NAME] or "Member"
+        username, user_id = await self._create_user(name)
+        mxid = f"@{username}:{self.cfg.domain}"
+        await self.db.upsert_account(mxid, user_id, username, code_managed=1, sms_status="sms", phone=number)
+        log.info("created %s for an SMS member", mxid)
+        return {"mxid": mxid, "app_user": False}
+
+    async def drop_sms_account(self, mxid: str) -> None:
+        """A removed SMS member who never used the app can't sign in with their number any more.
+        The Matrix account stays (its password is random and unknown), so re-adding them reuses it."""
+        acct = await self.db.account_by("mxid", mxid)
+        if acct is not None and acct["sms_status"] == "sms":
+            await self.db.upsert_account(mxid, acct["mas_user_id"], acct["username"], sms_status="removed")
+
+    async def sms_members(self, access_token: str | None, action: str, body: dict) -> dict:
+        """The app's "add someone by text" screen: the caller is whoever owns the access token."""
+        if self.bridge is None:
+            raise ServiceError(503, "unavailable", "Adding people by text isn't set up.")
+        mxid = await self.matrix.whoami(access_token) if access_token else None
+        if mxid is None:
+            raise ServiceError(401, "unauthorized", "Sign in again.")
+        req: dict = {"by": mxid, "room_id": str(body.get("room_id") or "")}
+        if action == "add":
+            req["name"] = " ".join(str(body.get("display_name") or "").split())[:MAX_NAME]
+        if action in ("add", "remove"):
+            number = normalize_number(str(body.get("phone") or ""))
+            if number is None:
+                raise ServiceError(400, "bad_phone", "That doesn't look like a phone number.")
+            req["number"] = number
+        res = await self.bridge.sms_members(action, req)
+        if res.get("ok") is False:
+            status = {"forbidden": 403, "rate_limited": 429, "not_found": 404, "bad_name": 400,
+                      "bad_phone": 400}.get(res.get("error"), 409)
+            raise ServiceError(status, res.get("error") or "refused", res.get("message") or "Couldn't do that.")
+        return res
 
     # ---- admin --------------------------------------------------------------------
 

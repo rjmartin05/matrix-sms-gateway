@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     email TEXT UNIQUE,
     phone TEXT UNIQUE,
     code_managed INTEGER NOT NULL DEFAULT 1,
+    sms_status TEXT,            -- D14: NULL = app account; sms = made for an SMS member; removed
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -74,6 +75,10 @@ class LoginDB:
             cols = {r["name"] for r in await cur.fetchall()}
         if "invite_hash" not in cols:
             await self.conn.execute("ALTER TABLE verifications ADD COLUMN invite_hash TEXT")
+        async with self.conn.execute("PRAGMA table_info(accounts)") as cur:
+            cols = {r["name"] for r in await cur.fetchall()}
+        if "sms_status" not in cols:
+            await self.conn.execute("ALTER TABLE accounts ADD COLUMN sms_status TEXT")
         await self.conn.commit()
 
     async def close(self) -> None:
@@ -98,7 +103,7 @@ class LoginDB:
         return await self.fetchone(f"SELECT * FROM accounts WHERE {field}=?", (value,))
 
     async def upsert_account(self, mxid: str, mas_user_id: str, username: str, **fields: Any) -> None:
-        assert set(fields) <= {"email", "phone", "code_managed"}
+        assert set(fields) <= {"email", "phone", "code_managed", "sms_status"}
         now = time.time()
         await self.execute(
             "INSERT INTO accounts (mxid, mas_user_id, username, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"

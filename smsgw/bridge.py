@@ -36,6 +36,9 @@ MAX_LINK_MEDIA_BYTES = 50 * 1024 * 1024
 ALERT_DEBOUNCE = 3600
 PENDING_DM_TTL = 600  # seconds a non-exact #dm waits for #yes
 REACTION_LOOKBACK = 7 * 86400  # how far back a reaction text's quote is matched
+SMS_STATUSES = ("allowlisted", "opted_in", "opted_out")  # the bridge posts as these members (not "app")
+# Room state listing who currently gets the group by text, so the app can tag them (D14).
+SMS_MEMBERS_EVENT = "io.github.rjmartin05.smsgw.sms_members"
 LOGIN_CODE_RE = re.compile(r"sign[- ]?in code:?\s*(\d{6})", re.IGNORECASE)  # the app's "text us" code (D13)
 
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
@@ -157,6 +160,12 @@ class Bridge:
         self.forward_login_code: Callable[[str, str], Awaitable[None]] | None = None
         # Set when the login service is configured: (created_by, note) -> {"url", "expires_at"}.
         self.create_invite: Callable[[str, str | None], Awaitable[dict]] | None = None
+        # Set when appservice.sms_accounts is on (D14): (name, number) -> {"mxid", "app_user"} makes or
+        # finds the real account for a number; drop_sms_account(mxid) stops a removed one signing in.
+        self.sms_account: Callable[[str, str], Awaitable[dict]] | None = None
+        self.drop_sms_account: Callable[[str], Awaitable[None]] | None = None
+        self._sms: dict[str, str] = {}  # mxid -> number, for members the bridge posts as
+        self._badges: dict[str, list[str]] = {}  # room -> SMS member list last published
 
     # ---- lifecycle ------------------------------------------------------------------
 
@@ -172,6 +181,7 @@ class Bridge:
                 log.error("bot can't join %s yet (%s); invite %s to the room", rc.room, e, self.mx.bot_mxid)
         if self.cfg.alerts_room and self.cfg.alerts_room.startswith("#"):
             self.cfg.alerts_room = await self.mx.resolve_room(self.cfg.alerts_room)
+        await self.refresh_sms()
 
     def stop(self) -> None:
         self._stopped = True
@@ -232,17 +242,47 @@ class Bridge:
 
     # ---- helpers --------------------------------------------------------------------
 
-    def is_ghost(self, mxid: str) -> bool:
-        return self.mx.number_for_ghost(mxid) is not None
+    def number_for(self, mxid: str) -> str | None:
+        """The phone number of an SMS member the bridge posts as, or None for anyone else."""
+        number = self._sms.get(mxid)
+        if number is None and not self.cfg.sms_accounts:
+            number = self.mx.number_for_ghost(mxid)
+        return number
 
-    def ghost_display(self, name: str) -> str:
-        return f"{name}{self.cfg.ghost_name_suffix}"
+    def is_ghost(self, mxid: str) -> bool:
+        return self.number_for(mxid) is not None
+
+    def sms_display(self, name: str) -> str:
+        # Real accounts (D14) keep a plain name, the one they'll have in the app; the app tags them instead.
+        return name if self.cfg.sms_accounts else f"{name}{self.cfg.ghost_name_suffix}"
+
+    async def refresh_sms(self) -> None:
+        """Reload who the bridge posts as, and republish each room's SMS member list (D14)."""
+        rows = await self.db.fetchall("SELECT room_id, number, mxid, status FROM members")
+        self._sms = {r["mxid"]: r["number"] for r in rows if r["status"] in SMS_STATUSES}
+        for room_id in self.number_by_room:
+            users = sorted({r["mxid"] for r in rows if r["room_id"] == room_id and r["status"] == "opted_in"})
+            if self._badges.get(room_id) == users:
+                continue
+            try:
+                await self.mx.set_state(room_id, SMS_MEMBERS_EVENT, {"users": users})
+                self._badges[room_id] = users
+            except Exception:
+                log.exception("publishing the SMS member list for %s failed", room_id)
+
+    async def ensure_profile(self, m: Member, *, force: bool = False) -> None:
+        """Display name and generated avatar for an SMS member. Ghosts get it every time; real accounts
+        only when added or renamed, so a name or photo they later set in the app isn't overwritten."""
+        if self.cfg.sms_accounts and not force:
+            return
+        await self.mx.set_displayname(m.mxid, self.sms_display(m.display_name))
+        await self.ensure_avatar(m.mxid, m.number, m.display_name)
 
     def strip_suffix(self, name: str) -> str:
         sfx = self.cfg.ghost_name_suffix
         return name[: -len(sfx)] if sfx and name.endswith(sfx) else name
 
-    async def ensure_avatar(self, number: str, name: str) -> None:
+    async def ensure_avatar(self, mxid: str, number: str, name: str) -> None:
         """Give an SMS ghost a generated initials avatar, unless they set their own with #avatar.
 
         Without one, clients build initials from "Name (SMS)" and show "R(". Regenerated when the
@@ -255,7 +295,7 @@ class Bridge:
             return
         try:
             png = await asyncio.to_thread(initials_avatar, name, number)
-            await self.mx.set_avatar(self.mx.ghost_mxid(number), png, "image/png")
+            await self.mx.set_avatar(mxid, png, "image/png")
             await self.db.set_meta(key, want)
         except Exception:
             log.exception("couldn't set generated avatar for %s", number)
@@ -268,7 +308,7 @@ class Bridge:
         return False
 
     async def sender_name(self, room_id: str, mxid: str) -> str:
-        num = self.mx.number_for_ghost(mxid)
+        num = self.number_for(mxid)
         if num:
             m = await self.db.get_member(room_id, num)
             if m:
@@ -281,7 +321,7 @@ class Bridge:
         for mxid, dn in joined.items():
             if mxid == self.mx.bot_mxid:
                 continue
-            num = self.mx.number_for_ghost(mxid)
+            num = self.number_for(mxid)
             if num:
                 m = await self.db.get_member(room_id, num)
                 if m is None or m.status != "opted_in":
@@ -316,7 +356,7 @@ class Bridge:
     # ---- consent state changes ------------------------------------------------------
 
     async def _opt_out(self, number: str, *, source: str, keyword: str | None, provider_id: str | None, detail: str | None = None) -> None:
-        rows = await self.db.fetchall("SELECT room_id, status FROM members WHERE number=?", (number,))
+        rows = await self.db.fetchall("SELECT room_id, mxid, status FROM members WHERE number=?", (number,))
         await self.db.set_number_status_all_rooms(number, "opted_out")
         skipped = await self.db.skip_pending_for(number, "recipient opted out")
         await self.db.log_consent(
@@ -324,11 +364,12 @@ class Bridge:
             detail=detail or (f"{skipped} queued message(s) dropped" if skipped else None),
         )
         for r in rows:
-            if r["status"] != "removed":
+            if r["status"] not in ("removed", "app"):
                 try:
-                    await self.mx.leave(r["room_id"], self.mx.ghost_mxid(number))
+                    await self.mx.leave(r["room_id"], r["mxid"])
                 except Exception:
                     log.exception("ghost leave failed")
+        await self.refresh_sms()
 
     async def _opt_in(self, member: Member, *, event: str, source: str, keyword: str, provider_id: str | None) -> None:
         await self.db.set_member_status(member.room_id, member.number, "opted_in")
@@ -336,10 +377,9 @@ class Bridge:
         await self.db.log_consent(
             member.number, event, source, room_id=member.room_id, keyword=keyword, provider_message_id=provider_id
         )
-        ghost = self.mx.ghost_mxid(member.number)
-        await self.mx.ensure_ghost(member.number, self.ghost_display(member.display_name))
-        await self.ensure_avatar(member.number, member.display_name)
-        await self.mx.join(member.room_id, ghost)
+        await self.ensure_profile(member)
+        await self.mx.join(member.room_id, member.mxid)
+        await self.refresh_sms()
 
     async def app_user(self, mxid: str, number: str | None) -> None:
         """The login service says ``mxid`` now uses the app (D13): invite them to the group rooms and,
@@ -350,15 +390,19 @@ class Bridge:
         if not number:
             return
         rows = await self.db.fetchall(
-            "SELECT room_id FROM members WHERE number=? AND status IN ('allowlisted', 'opted_in')", (number,))
+            "SELECT room_id, mxid FROM members WHERE number=? AND status IN ('allowlisted', 'opted_in', 'opted_out')",
+            (number,))
         if not rows:
             return
         for r in rows:
             await self.db.set_member_status(r["room_id"], number, "app")
+            if r["mxid"] == mxid:
+                continue  # a real account (D14): the same user just signed in, so they stay in the room
             try:
-                await self.mx.leave(r["room_id"], self.mx.ghost_mxid(number))
+                await self.mx.leave(r["room_id"], r["mxid"])
             except Exception:
                 log.exception("ghost leave failed")
+        await self.refresh_sms()
         skipped = await self.db.skip_pending_for(number, "moved to the app")
         await self.db.log_consent(number, "moved_to_app", "login", detail=f"{mxid}; {skipped} queued message(s) dropped")
         log.info("%s moved to the app as %s", number, mxid)
@@ -456,7 +500,7 @@ class Bridge:
         room_id, number = member.room_id, member.number
         if reset:
             await self.db.set_meta(f"avatar:{number}", "")
-            await self.ensure_avatar(number, member.display_name)
+            await self.ensure_avatar(member.mxid, number, member.display_name)
             await self.reply_sms(room_id, number, "Profile picture reset.", src)
             return
         images = [m for m in msg.media if (m.content_type or "").startswith("image/")] or msg.media
@@ -466,8 +510,7 @@ class Bridge:
         try:
             data, _ = await self.provider.fetch_media(images[0].url, self.cfg.inbound_media_max_bytes)
             jpeg = await asyncio.to_thread(square_avatar, data)
-            await self.mx.ensure_ghost(number, self.ghost_display(member.display_name))
-            await self.mx.set_avatar(self.mx.ghost_mxid(number), jpeg, "image/jpeg")
+            await self.mx.set_avatar(member.mxid, jpeg, "image/jpeg")
         except Exception:
             log.exception("#avatar from %s failed", number)
             await self.reply_sms(room_id, number, "Couldn't use that photo. Try another one.", src)
@@ -495,7 +538,7 @@ class Bridge:
             log.info("reaction text from %s didn't match a recent message; posting as text", member.number)
             return False
         target = await self._edit_target(member.room_id, target)
-        ghost = self.mx.ghost_mxid(member.number)
+        ghost = member.mxid
         try:
             if r.remove:
                 reaction_id = await self.db.pop_reaction(member.room_id, member.number, target, r.key)
@@ -553,7 +596,7 @@ class Bridge:
         if member is None or member.status == "removed":
             await self.db.log_consent(number, "join_rejected", "bridge", room_id=room_id, keyword=text,
                                       provider_message_id=provider_id, detail="not allowlisted")
-            await self.reply_sms(room_id, number, compliance.not_allowlisted(), src)
+            await self.reply_sms(room_id, number, compliance.not_allowlisted(self.cfg.members_can_add), src)
             return
         if member.status == "opted_out":
             # Telnyx keeps blocking until START/UNSTOP; any reply would be refused (40300).
@@ -590,8 +633,8 @@ class Bridge:
         if cmd.name == "NAME":
             name = cmd.args["name"]
             await self.db.set_member_field(room_id, member.number, "display_name", name)
-            await self.mx.set_displayname(self.mx.ghost_mxid(member.number), self.ghost_display(name))
-            await self.ensure_avatar(member.number, name)
+            await self.mx.set_displayname(member.mxid, self.sms_display(name))
+            await self.ensure_avatar(member.mxid, member.number, name)
             await self.reply_sms(room_id, member.number, f"Name set to {name}.", src)
             return True
         if cmd.name == "AVATAR":
@@ -635,7 +678,7 @@ class Bridge:
             await self.reply_sms(member.room_id, member.number, f"Reply #vote 1 to #vote {len(answers)}.", src)
             return
         answer_id, answer_text = answers[choice - 1]
-        ghost = self.mx.ghost_mxid(member.number)
+        ghost = member.mxid
         await self.mx.send_poll_response(
             member.room_id, ghost, poll["event_id"], answer_id, poll["style"], txn_id=f"vote-{provider_id}"
         )
@@ -645,7 +688,7 @@ class Bridge:
     async def _sms_dm(self, member: Member, rest: str, src: str, provider_id: str) -> None:
         room_id = member.room_id
         await self.db.clear_pending_dm(room_id, member.number)  # a new #dm replaces any pending one
-        me = self.mx.ghost_mxid(member.number)
+        me = member.mxid
         cands = await self.candidates(room_id)
         res = names.resolve_dm(rest, cands)
         if res.kind == "exact" and res.target.key == me:
@@ -672,8 +715,8 @@ class Bridge:
 
     async def _deliver_dm(self, member: Member, target_mxid: str, text: str, src: str, provider_id: str, confirm_name: str | None = None) -> None:
         room_id = member.room_id
-        sender_ghost = self.mx.ghost_mxid(member.number)
-        target_num = self.mx.number_for_ghost(target_mxid)
+        sender_ghost = member.mxid
+        target_num = self.number_for(target_mxid)
         name = confirm_name or await self.sender_name(room_id, target_mxid)
         if target_num:
             target = await self.db.get_member(room_id, target_num)
@@ -696,9 +739,8 @@ class Bridge:
 
     async def _post_to_group(self, member: Member, msg: InboundMessage, text: str) -> None:
         room_id = member.room_id
-        ghost = self.mx.ghost_mxid(member.number)
-        await self.mx.ensure_ghost(member.number, self.ghost_display(member.display_name))
-        await self.ensure_avatar(member.number, member.display_name)
+        ghost = member.mxid
+        await self.ensure_profile(member)
         await self.mx.join(room_id, ghost)
         first_event = None
         for i, m in enumerate(msg.media):
@@ -743,14 +785,26 @@ class Bridge:
 
     # ---- Matrix events --------------------------------------------------------------
 
-    def wants_matrix_event(self, evt: dict) -> bool:
-        """Cheap filter used by the appservice handler before persisting."""
+    async def wants_matrix_event(self, evt: dict) -> bool:
+        """Cheap filter used by the appservice handler before persisting.
+
+        With real-account SMS members (D14) the registration covers every user, so Synapse sends the
+        bridge every event on the server. Only the group rooms, SMS members' DM rooms and ! commands
+        in rooms the bot is in are kept; everything else is dropped unread."""
         etype = evt.get("type")
         if etype == "m.room.member":
             return evt.get("content", {}).get("membership") == "invite" and (
                 evt.get("state_key") == self.mx.bot_mxid or self.is_ghost(evt.get("state_key", ""))
             )
-        return etype in ("m.room.message",) + POLL_START + POLL_RESPONSE + POLL_END
+        if etype not in ("m.room.message",) + POLL_START + POLL_RESPONSE + POLL_END:
+            return False
+        if not self.cfg.sms_accounts:
+            return True
+        room_id = evt.get("room_id", "")
+        if room_id in self.number_by_room or await self.db.dm_room_info(room_id) is not None:
+            return True
+        body = ((evt.get("content") or {}).get("body") or "").strip()
+        return etype == "m.room.message" and body.startswith("!") and await self.mx.bot_joined(room_id)
 
     async def handle_matrix_event(self, evt: dict) -> None:
         etype = evt.get("type")
@@ -780,7 +834,7 @@ class Bridge:
         if target == self.mx.bot_mxid:
             await self.mx.join(room_id, target)
             return
-        number = self.mx.number_for_ghost(target)
+        number = self.number_for(target)
         if number is None or self.is_ghost(inviter) or inviter == self.mx.bot_mxid:
             return
         rows = await self.db.fetchall("SELECT * FROM members WHERE number=? AND status != 'removed'", (number,))
@@ -850,7 +904,7 @@ class Bridge:
         return f"{self.cfg.brand} poll results: {poll['question']} {res}"
 
     async def _fan_out(self, room_id: str, sender: str, r: Rendered, source_key: str) -> None:
-        exclude = self.mx.number_for_ghost(sender)
+        exclude = self.number_for(sender)
         from_number = self.number_by_room[room_id]
         for m in await self.db.members(room_id, "opted_in"):
             if m.number == exclude:
@@ -950,7 +1004,9 @@ class Bridge:
         return self.cfg.reply_quote_format.format(name=pname, quote=q)
 
     async def _handle_dm_from_matrix(self, room_id: str, ghost: str, sender: str, content: dict, event_id: str) -> None:
-        number = self.mx.number_for_ghost(ghost)
+        number = self.number_for(ghost)
+        if number is None:
+            return  # they use the app now and read this chat themselves
         rows = await self.db.fetchall("SELECT * FROM members WHERE number=? AND status != 'removed'", (number,))
         member = next((Member.from_row(r) for r in rows if r["status"] == "opted_in"), None)
         if member is None:
@@ -1032,6 +1088,9 @@ class Bridge:
 
         if head == "!help":
             lines = ["!dm Name - open an unencrypted chat with an SMS member"]
+            if self.cfg.members_can_add and not is_admin:
+                lines += ["!sms add +1XXXXXXXXXX Full Name - add someone by text",
+                          "!sms remove +1XXXXXXXXXX - remove someone you added"]
             if is_admin:
                 lines += [
                     "!sms add +1XXXXXXXXXX Full Name - allow a number",
@@ -1048,7 +1107,9 @@ class Bridge:
             return
         if head not in ("!sms", "!announce", "!invite"):
             return
-        if not is_admin:
+        sub = parts[1].lower() if len(parts) > 1 else ""
+        member_ok = head == "!sms" and sub in ("add", "remove") and await self.in_group(sender)
+        if not is_admin and not member_ok:
             await say("Admins only.")
             return
         if head == "!invite":
@@ -1057,12 +1118,11 @@ class Bridge:
         if head == "!announce":
             await self._cmd_announce(group, sender, body[len("!announce"):].strip(), say)
             return
-        sub = parts[1].lower() if len(parts) > 1 else ""
         arg = parts[2] if len(parts) > 2 else ""
         if sub == "add":
             await self._cmd_add(group, sender, arg, say)
         elif sub == "remove":
-            await self._cmd_remove(group, arg, say)
+            await self._cmd_remove(group, sender, arg, say)
         elif sub == "list":
             await self._cmd_list(group, say)
         elif sub == "status":
@@ -1097,29 +1157,119 @@ class Bridge:
         if not number or len(bits) < 2:
             await say("Usage: !sms add +1XXXXXXXXXX Full Name")
             return
-        name = " ".join(bits[1].split())[: commands.NAME_MAX_LEN]
-        ghost = self.mx.ghost_mxid(number)
-        m = await self.db.upsert_member(room_id, number, ghost, name, sender)
-        await self.mx.ensure_ghost(number, self.ghost_display(name))
-        await self.ensure_avatar(number, name)
-        await self.db.log_consent(number, "allowlisted", "admin", room_id=room_id, detail=f"by {sender}")
-        if m.status == "opted_in":
-            await say(f"Updated {name} ({number}); already opted in.")
-        else:
-            await say(f"Added {name} ({number}). Ask them to text JOIN to {self.number_by_room[room_id]}. "
-                      "Nothing is sent to them until they do.")
+        await say((await self.add_sms_member(room_id, sender, number, bits[1]))["message"])
 
-    async def _cmd_remove(self, room_id: str, arg: str, say) -> None:
+    async def _cmd_remove(self, room_id: str, sender: str, arg: str, say) -> None:
         number = normalize_number(arg.strip())
-        m = await self.db.get_member(room_id, number) if number else None
-        if m is None:
-            await say("Usage: !sms remove +1XXXXXXXXXX (number must be on the list)")
+        if not number:
+            await say("Usage: !sms remove +1XXXXXXXXXX")
             return
+        await say((await self.remove_sms_member(room_id, sender, number))["message"])
+
+    # ---- adding and removing SMS members (D14) --------------------------------------
+
+    async def add_sms_member(self, room_id: str, by: str, number: str, name: str) -> dict:
+        """Allow ``number`` in ``room_id`` on behalf of ``by`` (an admin, or any member when
+        matrix.members_can_add). Used by !sms add and the app. Returns {"ok", "message", ...}."""
+        name = " ".join(name.split())[: commands.NAME_MAX_LEN]
+        if not name:
+            return {"ok": False, "error": "bad_name", "message": "Enter their name."}
+        is_admin = await self._is_admin(room_id, by)
+        if not is_admin:
+            if not self.cfg.members_can_add:
+                return {"ok": False, "error": "forbidden", "message": "Only admins can add people by text."}
+            if await self.db.count_adds(by, time.time() - 86400) >= self.cfg.adds_per_day:
+                return {"ok": False, "error": "rate_limited",
+                        "message": "You've added a lot of people today. Try again tomorrow."}
+        existing = await self.db.get_member(room_id, number)
+        if existing and existing.status == "app":
+            return {"ok": False, "error": "uses_app", "message": f"{existing.display_name} already uses the app."}
+        new = existing is None or existing.status == "removed"
+        if not self.cfg.sms_accounts:
+            mxid = self.mx.ghost_mxid(number)
+        elif existing and not new:
+            mxid = existing.mxid
+        else:
+            if self.sms_account is None:
+                return {"ok": False, "error": "unavailable", "message": "The login service isn't connected."}
+            acct = await self.sms_account(name, number)
+            if acct.get("app_user"):
+                return {"ok": False, "error": "uses_app", "message": "That number already has an account in the app."}
+            mxid = acct["mxid"]
+        m = await self.db.upsert_member(room_id, number, mxid, name, by)
+        await self.ensure_profile(m, force=True)
+        await self.db.log_consent(number, "allowlisted", "admin" if is_admin else "member", room_id=room_id,
+                                  detail=f"by {by}")
+        await self.refresh_sms()
+        group_number = self.number_by_room[room_id]
+        out = {"ok": True, "mxid": mxid, "status": m.status, "invite_sent": False}
+        if m.status == "opted_in":
+            return {**out, "message": f"Updated {name} ({number}); already opted in."}
+        if new and self.cfg.invite_text and not m.ever_joined and not await self.db.ever_opted_out(number):
+            adder = first_name(await self.sender_name(room_id, by))
+            text = self.cfg.invite_text.format(brand=self.cfg.brand, adder=adder, number=group_number)
+            await self.db.enqueue(source_key=f"invite:{room_id}:{time.time():.0f}", room_id=room_id,
+                                  from_number=group_number, to_number=number, kind="invite", text=text)
+            self.queue.notify()
+            return {**out, "invite_sent": True,
+                    "message": f"Added {name} ({number}). They got a text asking them to reply JOIN."}
+        return {**out, "message": f"Added {name} ({number}). Ask them to text JOIN to {group_number}. "
+                                  "Nothing is sent to them until they do."}
+
+    async def remove_sms_member(self, room_id: str, by: str, number: str) -> dict:
+        """Admins can remove anyone; members only people they added (D14). Nothing is texted to them."""
+        m = await self.db.get_member(room_id, number)
+        if m is None or m.status == "removed":
+            return {"ok": False, "error": "not_found", "message": "That number isn't on the list."}
+        if not (await self._is_admin(room_id, by) or m.added_by == by):
+            return {"ok": False, "error": "forbidden",
+                    "message": "Only an admin or the person who added them can remove them."}
+        if m.status == "app":
+            return {"ok": False, "error": "uses_app",
+                    "message": f"{m.display_name} uses the app now. Remove them from the room instead."}
         await self.db.set_member_status(room_id, m.number, "removed")
-        await self.db.skip_pending_for(m.number, "removed by admin")
-        await self.db.log_consent(m.number, "removed", "admin", room_id=room_id)
+        await self.db.skip_pending_for(m.number, "removed")
+        await self.db.log_consent(m.number, "removed", "admin", room_id=room_id, detail=f"by {by}")
         await self.mx.leave(room_id, m.mxid)
-        await say(f"Removed {m.display_name} ({m.number}). No text was sent to them.")
+        await self.refresh_sms()
+        if self.cfg.sms_accounts and self.drop_sms_account and not any(
+                r["status"] != "removed"
+                for r in await self.db.fetchall("SELECT status FROM members WHERE number=?", (m.number,))):
+            try:
+                await self.drop_sms_account(m.mxid)
+            except Exception:
+                log.exception("couldn't retire the account of removed member %s", m.mxid)
+        return {"ok": True, "message": f"Removed {m.display_name} ({m.number}). No text was sent to them."}
+
+    async def sms_members_api(self, action: str, body: dict) -> dict:
+        """Internal API for the app (via the login service): list | add | remove for body["by"]."""
+        by = str(body["by"])
+        room_id = str(body.get("room_id") or "") or self.room_by_number[self.cfg.rooms[0].number]
+        if room_id not in self.number_by_room:
+            return {"ok": False, "error": "not_found", "message": "That room isn't bridged to text."}
+        if by not in await self.mx.joined_members(room_id):
+            return {"ok": False, "error": "forbidden", "message": "Only group members can do that."}
+        if action == "list":
+            return {"ok": True, "room_id": room_id, "members": await self.list_sms_members(room_id, by)}
+        number = normalize_number(str(body.get("number") or ""))
+        if number is None:
+            return {"ok": False, "error": "bad_phone", "message": "That doesn't look like a phone number."}
+        if action == "add":
+            return await self.add_sms_member(room_id, by, number, str(body.get("name") or ""))
+        return await self.remove_sms_member(room_id, by, number)
+
+    async def list_sms_members(self, room_id: str, by: str) -> list[dict]:
+        """For the app's member screen: everyone on the SMS list, and whether ``by`` may remove them."""
+        is_admin = await self._is_admin(room_id, by)
+        out = []
+        for m in await self.db.members(room_id):
+            if m.status not in SMS_STATUSES:
+                continue
+            mine = is_admin or m.added_by == by
+            # Numbers stay private, as in the group itself: only admins and whoever added someone see it.
+            out.append({"mxid": m.mxid, "name": m.display_name, "status": m.status, "can_remove": mine,
+                        **({"number": m.number} if mine else {})})
+        return out
 
     async def _cmd_list(self, room_id: str, say) -> None:
         ms = await self.db.members(room_id)

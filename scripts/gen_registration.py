@@ -27,6 +27,9 @@ def main() -> int:
     ap.add_argument("--url", default="http://matrix-sms-gateway:29340")
     ap.add_argument("--bot", default="smsbot")
     ap.add_argument("--ghost-prefix", default="sms_")
+    ap.add_argument("--real-users", action="store_true",
+                    help="SMS members are real accounts (appservice.sms_accounts, D14): let the bridge "
+                         "post as any user on this server (non-exclusive namespace)")
     args = ap.parse_args()
 
     reg_path = os.path.join(args.out, "registration.yaml")
@@ -39,6 +42,9 @@ def main() -> int:
     hs_token = secrets.token_urlsafe(48)
     dom = re.escape(args.domain)
     # Exclusive namespaces: only the bot and phone-number ghosts. No alias/room namespaces.
+    # --real-users adds a non-exclusive namespace for every local user, so the bridge can post as SMS
+    # members' own accounts; it then also receives every event and filters them (Bridge.wants_matrix_event).
+    real = f"\n    - exclusive: false\n      regex: '@.*:{dom}'" if args.real_users else ""
     reg = f"""id: {args.id}
 url: {args.url}
 as_token: {as_token}
@@ -51,7 +57,7 @@ namespaces:
     - exclusive: true
       regex: '@{re.escape(args.bot)}:{dom}'
     - exclusive: true
-      regex: '@{re.escape(args.ghost_prefix)}[0-9]{{8,15}}:{dom}'
+      regex: '@{re.escape(args.ghost_prefix)}[0-9]{{8,15}}:{dom}'{real}
   aliases: []
   rooms: []
 """

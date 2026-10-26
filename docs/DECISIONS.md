@@ -132,6 +132,18 @@
   - When a phone member signs in to the app, the bridge stops texting them (status `app`), their ghost
     leaves, and START/JOIN turns SMS back on.
 
+## Decided (2026-10-26)
+
+- **D14 SMS members are real accounts, and any group member can add them** ([SMS_MEMBERS.md](SMS_MEMBERS.md)).
+  - With `appservice.sms_accounts` on, the login service creates an ordinary account per SMS member
+    (`@dave.miller`, not `@sms_<digits>`), and the bridge posts as it through a non-exclusive appservice
+    namespace. Switching to the app means signing in to that same account.
+  - Display names are plain; the app tags SMS members from a room state event.
+  - Members add people from the app or `!sms add`; admins or whoever added someone can remove them.
+  - An optional one-time invite text (`compliance.invite_text`) goes out when someone is added. This
+    relaxes the "never text first" rule (BRIEF §4) for that one message, once the 10DLC campaign is
+    updated to cover it. Without it, nothing is sent until they text JOIN.
+
 ## Open
 
 None.

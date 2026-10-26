@@ -51,7 +51,7 @@ async def test_add_sends_nothing(env):
 async def test_join_not_allowlisted(env):
     await env.sms(STRANGER, "join")
     await env.drain()
-    assert texts_to(env, STRANGER) == ["Ask the group admin to add your number."]
+    assert texts_to(env, STRANGER) == ["Ask someone in the group to add your number."]
     assert await consent(env, STRANGER) == [("join_rejected", "bridge")]
     assert await env.db.get_member(ROOM, STRANGER) is None
 

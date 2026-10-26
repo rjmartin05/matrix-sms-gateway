@@ -29,5 +29,5 @@ def help_registered(brand: str, email: str) -> str:
     return f"{brand}: Group text relay. Reply STOP to opt out, START to rejoin. Help: {email}"
 
 
-def not_allowlisted() -> str:
-    return "Ask the group admin to add your number."
+def not_allowlisted(members_can_add: bool = False) -> str:
+    return "Ask someone in the group to add your number." if members_can_add else "Ask the group admin to add your number."

@@ -186,6 +186,7 @@ class Member:
     ever_joined: bool
     consecutive_failures: int
     last_dm_from: str | None
+    added_by: str | None = None
 
     @classmethod
     def from_row(cls, r: aiosqlite.Row) -> "Member":
@@ -200,6 +201,7 @@ class Member:
             ever_joined=bool(r["ever_joined"]),
             consecutive_failures=r["consecutive_failures"],
             last_dm_from=r["last_dm_from"],
+            added_by=r["added_by"],
         )
 
 
@@ -293,15 +295,31 @@ class Database:
                 " added_at, updated_at) VALUES (?, ?, ?, ?, 'allowlisted', ?, ?, ?)",
                 (room_id, number, mxid, name, added_by, now, now),
             )
-        else:
-            new_status = "allowlisted" if existing.status == "removed" else existing.status
+        elif existing.status == "removed":
+            # Re-added: whoever adds them now may remove them, and (D14) the account may be a new one.
             await self.execute(
-                "UPDATE members SET display_name=?, status=?, updated_at=? WHERE room_id=? AND number=?",
-                (name, new_status, now, room_id, number),
+                "UPDATE members SET display_name=?, status='allowlisted', mxid=?, added_by=?, updated_at=?"
+                " WHERE room_id=? AND number=?",
+                (name, mxid, added_by, now, room_id, number),
+            )
+        else:
+            await self.execute(
+                "UPDATE members SET display_name=?, updated_at=? WHERE room_id=? AND number=?",
+                (name, now, room_id, number),
             )
         m = await self.get_member(room_id, number)
         assert m
         return m
+
+    async def count_adds(self, by: str, since: float) -> int:
+        r = await self.fetchone(
+            "SELECT COUNT(*) AS n FROM consent_log WHERE event='allowlisted' AND detail=? AND ts>=?",
+            (f"by {by}", since))
+        return r["n"] if r else 0
+
+    async def ever_opted_out(self, number: str) -> bool:
+        return await self.fetchone(
+            "SELECT 1 FROM consent_log WHERE number=? AND event='opt_out' LIMIT 1", (number,)) is not None
 
     async def set_member_status(self, room_id: str, number: str, status: str) -> None:
         extra = ", ever_joined=1" if status == "opted_in" else ""

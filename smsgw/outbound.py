@@ -2,7 +2,8 @@
 
 Guarantees:
 - Compliance gate at send time: a row is only sent if the recipient is currently opted in
-  (kind group/dm/system), or, for direct replies to an inbound text (kind reply), not opted out.
+  (kind group/dm/system), or, for direct replies to an inbound text (kind reply), not opted out,
+  or, for the one invite text (kind invite, D14), still waiting to join.
   So STOP takes effect for messages already queued.
 - No duplicate sends across restarts: a row is marked 'sending' (committed) before the API call;
   rows found in 'sending' at startup become 'unknown' and are never retried.
@@ -120,6 +121,13 @@ class OutboundQueue:
         if "opted_out" in statuses:
             return False, "recipient opted out"
         if kind == "reply":
+            return True, None
+        if kind == "invite":
+            # D14: the one text sent when someone is added, before they JOIN. Only while they're
+            # still just allowlisted (not removed, not already in).
+            m = await self.db.get_member(row["room_id"], row["to_number"]) if row["room_id"] else None
+            if m is None or m.status != "allowlisted":
+                return False, "no longer waiting to join"
             return True, None
         if row["room_id"]:
             m = await self.db.get_member(row["room_id"], row["to_number"])

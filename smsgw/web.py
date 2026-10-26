@@ -64,7 +64,8 @@ def build_app(db: Database, provider: Provider, on_inbound: Callable[[], Awaitab
     return app
 
 
-def build_internal_app(on_app_user: Callable[[str, str | None], Awaitable[None]], secret: str) -> web.Application:
+def build_internal_app(on_app_user: Callable[[str, str | None], Awaitable[None]], secret: str,
+                       sms_members: Callable[[str, dict], Awaitable[dict]] | None = None) -> web.Application:
     app = web.Application(client_max_size=16 * 1024)
 
     async def app_user(request: web.Request) -> web.Response:
@@ -81,5 +82,21 @@ def build_internal_app(on_app_user: Callable[[str, str | None], Awaitable[None]]
         await on_app_user(mxid, str(number) if number else None)
         return web.json_response({"ok": True})
 
+    async def members(request: web.Request) -> web.Response:
+        # The login service forwards the app's "add someone by text" requests, with the caller's mxid.
+        auth = request.headers.get("Authorization", "")
+        if not hmac.compare_digest(auth, f"Bearer {secret}"):
+            return web.Response(status=401)
+        if sms_members is None:
+            return web.Response(status=404)
+        try:
+            body = await request.json()
+            if not isinstance(body, dict) or not str(body.get("by", "")).startswith("@"):
+                raise ValueError
+        except ValueError:
+            return web.Response(status=400)
+        return web.json_response(await sms_members(request.match_info["action"], body))
+
     app.router.add_post("/internal/app-user", app_user)
+    app.router.add_post("/internal/sms-members/{action:list|add|remove}", members)
     return app

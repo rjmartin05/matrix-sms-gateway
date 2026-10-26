@@ -14,10 +14,8 @@ class MatrixPort(Protocol):
 
     async def resolve_room(self, room: str) -> str: ...
 
-    async def ensure_ghost(self, number: str, displayname: str) -> None: ...
-
     async def join(self, room_id: str, mxid: str) -> None:
-        """Make ``mxid`` (bot or ghost) a joined member; the bot invites ghosts if needed."""
+        """Make ``mxid`` (bot or SMS member) a joined member; the bot invites them if needed."""
 
     async def leave(self, room_id: str, mxid: str) -> None: ...
 
@@ -63,6 +61,8 @@ class MatrixPort(Protocol):
     async def joined_members(self, room_id: str) -> dict[str, str]:
         """mxid -> display name (falls back to localpart)."""
 
+    async def bot_joined(self, room_id: str) -> bool: ...
+
     async def display_name(self, room_id: str, mxid: str) -> str: ...
 
     async def power_level(self, room_id: str, mxid: str) -> int: ...
@@ -78,3 +78,6 @@ class MatrixPort(Protocol):
     async def set_displayname(self, mxid: str, name: str) -> None: ...
 
     async def set_avatar(self, mxid: str, data: bytes, mimetype: str) -> None: ...
+
+    async def set_state(self, room_id: str, etype: str, content: dict, state_key: str = "") -> None:
+        """The bot sets a room state event."""

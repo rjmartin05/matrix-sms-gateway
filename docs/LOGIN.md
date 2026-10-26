@@ -56,6 +56,8 @@ A verification: `{"verification_id", "channel": "email"|"sms", "expires_in"}`, p
 A session: `{"status": "ok", "homeserver", "user_id", "device_id", "access_token", "refresh_token",
 "expires_in_ms"}`. Give these to the Matrix SDK as an existing login; refresh as usual.
 
+Adding people by text from the app (`/v1/sms-members`): see [SMS_MEMBERS.md](SMS_MEMBERS.md).
+
 Error codes worth handling: `bad_invite`, `bad_join_token`, `already_registered`, `no_account`, `wrong_code`,
 `too_many_attempts`, `expired`, `already_used`, `rate_limited`, `try_again` (retry the same request),
 `email_failed`.

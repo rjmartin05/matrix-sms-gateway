@@ -88,6 +88,14 @@ class Config:
     internal_host: str = "0.0.0.0"
     internal_port: int = 29344
     internal_secret: str | None = None
+    # D14: SMS members are real accounts (created by the login service) instead of @<prefix><digits>
+    # ghosts. Needs the login service and a registration whose user namespace covers real users.
+    sms_accounts: bool = False
+    # D14: one text sent when someone is added, before they JOIN. None = send nothing until they JOIN.
+    # Must match the 10DLC campaign; {brand}, {adder} and {number} are filled in.
+    invite_text: str | None = None
+    members_can_add: bool = True
+    adds_per_day: int = 20  # per person adding, so nobody can text-bomb numbers through the bridge
 
 
 def _env(name: str, required: bool = True) -> str | None:
@@ -133,6 +141,13 @@ def load(path: str) -> Config:
 
     login_url = get("login", "service_url", None)
     internal_secret = _env("SMSGW_INTERNAL_SECRET") if y.get("login") else None
+
+    sms_accounts = bool(get("appservice", "sms_accounts", False))
+    if sms_accounts and not login_url:
+        raise ConfigError("appservice.sms_accounts needs login.service_url (accounts are created there)")
+    invite_text = get("compliance", "invite_text", None) or None
+    if invite_text and "STOP" not in invite_text:
+        raise ConfigError("compliance.invite_text must tell people how to opt out (include STOP)")
 
     poll_style = get("matrix", "poll_style", "unstable")
     if poll_style not in ("stable", "unstable"):
@@ -185,4 +200,8 @@ def load(path: str) -> Config:
         internal_host=get("login", "internal_listen_host", "0.0.0.0"),
         internal_port=int(get("login", "internal_listen_port", 29344)),
         internal_secret=internal_secret,
+        sms_accounts=sms_accounts,
+        invite_text=invite_text,
+        members_can_add=bool(get("matrix", "members_can_add", True)),
+        adds_per_day=int(get("matrix", "adds_per_day", 20)),
     )
