@@ -539,6 +539,25 @@ async def test_invites_need_public_url(svc):
     with pytest.raises(ServiceError) as e:
         await svc.create_invite(None)
     assert e.value.code == "invites_disabled"
+    svc.cfg = dataclasses.replace(svc.cfg, public_url="https://login.example.org")  # no app to open the link
+    with pytest.raises(ServiceError) as e:
+        await svc.create_invite(None)
+    assert e.value.code == "invites_disabled"
+
+
+async def test_invite_released_when_no_account_made(isvc, monkeypatch):
+    inv = await isvc.create_invite(None)
+    real = isvc._create_user
+
+    async def no_username(name):
+        raise ServiceError(409, "no_username", "Couldn't pick a username.")
+
+    monkeypatch.setattr(isvc, "_create_user", no_username)
+    with pytest.raises(ServiceError) as e:
+        await invite_signup(isvc, inv["code"])
+    assert e.value.code == "no_username"
+    monkeypatch.setattr(isvc, "_create_user", real)
+    assert (await invite_signup(isvc, inv["code"]))["user_id"] == "@dave.miller:example.org"
 
 
 async def test_join_page_and_assetlinks(isvc):
@@ -610,6 +629,15 @@ async def test_bridge_invite_command(env):
     await env.matrix({"type": "m.room.message", "sender": "@rando:example.org", "room_id": "!botdm2:example.org",
                       "content": {"msgtype": "m.text", "body": "!invite"}})
     assert env.port.sent[-1]["content"]["body"] == "Admins only." and len(made) == 1
+    # A side room with someone else in it is not private.
+    env.port.rooms["!side:example.org"] = {ADMIN: "Admin", "@bob:example.org": "Bob", env.port.bot_mxid: "bot"}
+    await env.matrix({"type": "m.room.message", "sender": ADMIN, "room_id": "!side:example.org",
+                      "content": {"msgtype": "m.text", "body": "!invite"}})
+    assert "private chat" in env.port.sent[-1]["content"]["body"] and len(made) == 1
+    env.bridge.cfg.alerts_room = "!side:example.org"  # ...unless it's the admin room
+    await env.matrix({"type": "m.room.message", "sender": ADMIN, "room_id": "!side:example.org",
+                      "content": {"msgtype": "m.text", "body": "!invite"}})
+    assert len(made) == 2
 
 
 async def test_bridge_invite_without_login_service(env):

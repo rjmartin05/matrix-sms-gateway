@@ -37,7 +37,7 @@ email:
 app:
   name: Example Chat
   device_name: Example Chat app
-  # Invite links (docs/LOGIN.md "Invite links"). Leave public_url empty to turn them off.
+  # Invite links (docs/LOGIN.md "Invite links"). They need both public_url and android_package; leave either empty to turn them off.
   public_url: ""                   # PLACEHOLDER: this service's public URL, e.g. https://login.example.com
   android_package: ""              # PLACEHOLDER: the app's applicationId
   android_cert_sha256: []          # PLACEHOLDER: Play Console > App integrity > App signing key SHA-256

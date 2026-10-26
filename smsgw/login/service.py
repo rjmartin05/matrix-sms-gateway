@@ -160,8 +160,9 @@ class LoginService:
         return hmac.new(self.cfg.code_secret.encode(), f"invite:{code}".encode(), hashlib.sha256).hexdigest()
 
     async def create_invite(self, created_by: str | None, note: str | None = None) -> dict:
-        if not self.cfg.public_url:
-            raise ServiceError(400, "invites_disabled", "Invite links need app.public_url in login.yaml.")
+        if not (self.cfg.public_url and self.cfg.android_package):
+            raise ServiceError(400, "invites_disabled",
+                               "Invite links need app.public_url and app.android_package in login.yaml.")
         code = secrets.token_urlsafe(16)  # 128 bits: not guessable, so no rate limit needed on checks
         expires_at = self.now() + self.cfg.invite_ttl_seconds
         await self.db.add_invite(self._invite_hash(code), created_by, (note or "")[:100] or None, self.now(), expires_at)
@@ -266,7 +267,13 @@ class LoginService:
             if v.get("invite_hash") and not await self.db.use_invite(v["invite_hash"], v["id"], self.now()):
                 raise ServiceError(410, "bad_invite",
                                    "That invite link has expired or was already used. Ask the group admin for a new one.")
-            username, user_id = await self._create_user(v["display_name"])
+            try:
+                username, user_id = await self._create_user(v["display_name"])
+            except ServiceError:
+                # No account was made and this verification is spent: give the invite back.
+                if v.get("invite_hash"):
+                    await self.db.release_invite(v["invite_hash"], v["id"])
+                raise
             mxid = f"@{username}:{self.cfg.domain}"
             # Recorded first, so a retry after a later failure reuses this account.
             await self.db.execute("UPDATE verifications SET mxid=? WHERE id=?", (mxid, v["id"]))

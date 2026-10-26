@@ -1052,7 +1052,7 @@ class Bridge:
             await say("Admins only.")
             return
         if head == "!invite":
-            await self._cmd_invite(sender, body[len("!invite"):].strip(), say, in_group=in_group)
+            await self._cmd_invite(cmd_room, sender, body[len("!invite"):].strip(), say, in_group=in_group)
             return
         if head == "!announce":
             await self._cmd_announce(group, sender, body[len("!announce"):].strip(), say)
@@ -1070,9 +1070,11 @@ class Bridge:
         else:
             await say("Usage: !sms add|remove|list|status")
 
-    async def _cmd_invite(self, sender: str, note: str, say, *, in_group: bool) -> None:
-        if in_group:
-            # Anyone who sees the link can use it, so never post one where the whole group can.
+    async def _cmd_invite(self, cmd_room: str, sender: str, note: str, say, *, in_group: bool) -> None:
+        # Anyone who sees the link can use it: only post one in the admin room or a 1:1 chat with the bot.
+        private = cmd_room == self.cfg.alerts_room or (
+            not in_group and not set(await self.mx.joined_members(cmd_room)) - {self.mx.bot_mxid, sender})
+        if not private:
             await say("Send !invite to me in a private chat or the admin room, so the link isn't shown to everyone.")
             return
         if self.create_invite is None:

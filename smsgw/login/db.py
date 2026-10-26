@@ -174,6 +174,10 @@ class LoginDB:
         )
         return cur.rowcount == 1
 
+    async def release_invite(self, code_hash: str, vid: str) -> None:
+        await self.execute("UPDATE invites SET used_at=NULL, used_vid=NULL WHERE code_hash=? AND used_vid=?"
+                           " AND used_by IS NULL", (code_hash, vid))
+
     async def set_invite_user(self, code_hash: str, mxid: str) -> None:
         await self.execute("UPDATE invites SET used_by=? WHERE code_hash=?", (mxid, code_hash))
 
