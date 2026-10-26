@@ -89,6 +89,15 @@ async def main(config_path: str) -> None:
                 log.info("sign-in code from %s %s", number, "matched" if (await r.json()).get("matched") else "unmatched")
 
         bridge.forward_login_code = forward_login_code
+        invites_url = f"{cfg.login_url}/internal/invites"
+
+        async def create_invite(created_by: str, note: str | None) -> dict:
+            async with login_http.post(invites_url, json={"created_by": created_by, "note": note},
+                                       headers={"Authorization": f"Bearer {secret}"}) as r:
+                r.raise_for_status()
+                return await r.json()
+
+        bridge.create_invite = create_invite
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()

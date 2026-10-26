@@ -155,6 +155,8 @@ class Bridge:
         queue.on_sent = self.check_spend
         # Set when the login service is configured: forwards (number, code) from a sign-in text.
         self.forward_login_code: Callable[[str, str], Awaitable[None]] | None = None
+        # Set when the login service is configured: (created_by, note) -> {"url", "expires_at"}.
+        self.create_invite: Callable[[str, str | None], Awaitable[dict]] | None = None
 
     # ---- lifecycle ------------------------------------------------------------------
 
@@ -1037,16 +1039,20 @@ class Bridge:
                     "!sms list - allowlist",
                     "!sms status - members, failures, usage and cost",
                     "!announce text - pinned announcement, texted to everyone; add | yes | no for an RSVP poll",
+                    "!invite [who it's for] - one-time app sign-up link (send this to me privately)",
                 ]
             await say("\n".join(lines))
             return
         if head == "!dm":
             await self._cmd_dm(group, cmd_room, sender, body[3:].strip(), say)
             return
-        if head not in ("!sms", "!announce"):
+        if head not in ("!sms", "!announce", "!invite"):
             return
         if not is_admin:
             await say("Admins only.")
+            return
+        if head == "!invite":
+            await self._cmd_invite(sender, body[len("!invite"):].strip(), say, in_group=in_group)
             return
         if head == "!announce":
             await self._cmd_announce(group, sender, body[len("!announce"):].strip(), say)
@@ -1063,6 +1069,25 @@ class Bridge:
             await say(await self.status_text(group))
         else:
             await say("Usage: !sms add|remove|list|status")
+
+    async def _cmd_invite(self, sender: str, note: str, say, *, in_group: bool) -> None:
+        if in_group:
+            # Anyone who sees the link can use it, so never post one where the whole group can.
+            await say("Send !invite to me in a private chat or the admin room, so the link isn't shown to everyone.")
+            return
+        if self.create_invite is None:
+            await say("Invite links need the login service (login.service_url in config.yaml).")
+            return
+        try:
+            inv = await self.create_invite(sender, note or None)
+        except Exception as e:
+            log.error("creating invite failed: %s", e)
+            await say("Couldn't create an invite right now. Try again in a minute.")
+            return
+        expires = time.strftime("%b %-d", time.gmtime(inv["expires_at"]))
+        who = f" for {note}" if note else ""
+        await say(f"One-time sign-up link{who}:\n{inv['url']}\n"
+                  f"It works once and expires {expires}. Send it to them directly.")
 
     async def _cmd_add(self, room_id: str, sender: str, arg: str, say) -> None:
         bits = arg.split(None, 1)

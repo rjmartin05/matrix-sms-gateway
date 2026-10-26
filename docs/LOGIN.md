@@ -4,7 +4,8 @@ A small HTTP service that lets a custom Matrix app sign people up and in with a 
 app's own screens: no browser page, no password, no homeserver to type. It runs as its own process and
 container (`python -m smsgw.login`), from the same image as the bridge.
 
-- **Sign up:** name + join code (a MAS registration token) + email or phone, then verify.
+- **Sign up:** name + a one-time **invite link** (or the shared join code, a MAS registration token, if
+  still allowed) + email or phone, then verify.
 - **Sign in:** email or phone, then verify.
 - **Switch:** someone signed in with a password (in any client) can switch their account to codes.
   Their password stops working; codes are the way in from then on.
@@ -43,7 +44,7 @@ Base URL: the service's public hostname. JSON in and out. Errors: HTTP status +
 
 | Request | Body | Result |
 |---|---|---|
-| `POST /v1/signup` | `display_name`, `join_token`, and `email` or `phone` | a verification |
+| `POST /v1/signup` | `display_name`, `invite` (or `join_token`), and `email` or `phone` | a verification |
 | `POST /v1/login` | `email` or `phone` | a verification |
 | `POST /v1/switch` | header `Authorization: Bearer <the app's current access token>`; `email` or `phone` | a verification |
 | `POST /v1/verify` | `verification_id`, `code` (email codes) | a session |
@@ -55,9 +56,44 @@ A verification: `{"verification_id", "channel": "email"|"sms", "expires_in"}`, p
 A session: `{"status": "ok", "homeserver", "user_id", "device_id", "access_token", "refresh_token",
 "expires_in_ms"}`. Give these to the Matrix SDK as an existing login; refresh as usual.
 
-Error codes worth handling: `bad_join_token`, `already_registered`, `no_account`, `wrong_code`,
+Error codes worth handling: `bad_invite`, `bad_join_token`, `already_registered`, `no_account`, `wrong_code`,
 `too_many_attempts`, `expired`, `already_used`, `rate_limited`, `try_again` (retry the same request),
 `email_failed`.
+
+## Invite links
+
+An admin sends `!invite Sue` to the bridge bot in a private chat (or the admin room). The bot replies with
+a one-time link, `https://<this service>/join/<code>`. In the group room it refuses, since anyone who sees
+a link could use it. Without Matrix: `docker exec matrix-sms-login smsgw-login -c /data/login.yaml
+create-invite --note Sue`.
+
+- **One use, 7 days** (`invites.ttl_days`). The code has 128 random bits and only its hash is stored.
+  It's checked when sign-up starts and spent only when the account is created, so a mistyped code or
+  an abandoned verification doesn't burn it. Two people racing on one link: the first to finish wins.
+- **Opens in the app.** The app declares a verified Android App Link for `https://<this host>/join/`, and
+  this service publishes `/.well-known/assetlinks.json`. With the app installed, Android opens the
+  sign-up screen with the code filled in; no browser. Without the app, the link lands on a tiny page that
+  jumps straight to Google Play. It passes `referrer=invite=<code>` to Play, for a later app version to
+  pick up. The page doesn't check the code.
+- **Turning off the shared code:** once everyone joins by invite, set `invites.allow_join_token: false`.
+  Sign-up then needs an invite. Accounts and password sign-up on MAS's own page are unaffected; MAS's
+  registration token still gates that.
+
+Setup (`login.yaml`, then restart `matrix-sms-login`):
+
+```yaml
+app:
+  public_url: https://login.example.com          # this service's public URL (PLACEHOLDER)
+  android_package: com.example.groupchat         # the app's applicationId (PLACEHOLDER)
+  android_cert_sha256:                           # PLACEHOLDER, see below
+    - "AA:BB:...:FF"
+```
+
+`android_cert_sha256` is the **app signing key** certificate's SHA-256 from Play Console → your app →
+Test and release → App integrity → App signing. That's the key Google signs Play installs with, not your
+upload key. Add your upload key's SHA-256 too if you also install builds from CI artifacts directly.
+Check `https://<this host>/.well-known/assetlinks.json` loads with no redirect or challenge; Cloudflare
+bot protection on this host would break Android's verification.
 
 ## Deploy
 

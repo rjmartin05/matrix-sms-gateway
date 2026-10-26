@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import yaml
@@ -42,6 +42,13 @@ class LoginConfig:
     device_name: str
     client_ip_header: str | None
     log_level: str = "INFO"
+    # One-time invite links (docs/LOGIN.md "Invite links").
+    public_url: str | None = None  # this service's public base URL; None disables invite links
+    invite_ttl_seconds: int = 7 * 86400
+    allow_join_token: bool = True  # also accept the shared MAS registration token at sign-up
+    android_package: str | None = None  # for /.well-known/assetlinks.json (verified App Links)
+    android_cert_sha256: list[str] = field(default_factory=list)
+    install_url: str | None = None  # where /join sends people without the app; default: the Play listing
 
 
 def _env(name: str, required: bool = True) -> str | None:
@@ -102,4 +109,10 @@ def load(path: str) -> LoginConfig:
         device_name=get("app", "device_name", "Example Chat app"),
         client_ip_header=get("listen", "client_ip_header", "CF-Connecting-IP") or None,
         log_level=get("logging", "level", "INFO"),
+        public_url=str(get("app", "public_url", "") or "").rstrip("/") or None,
+        invite_ttl_seconds=int(get("invites", "ttl_days", 7)) * 86400,
+        allow_join_token=bool(get("invites", "allow_join_token", True)),
+        android_package=get("app", "android_package", None) or None,
+        android_cert_sha256=[str(x).upper() for x in (get("app", "android_cert_sha256", []) or [])],
+        install_url=get("app", "install_url", None) or None,
     )

@@ -99,12 +99,13 @@ class LoginService:
         return hmac.new(self.cfg.code_secret.encode(), f"{vid}:{code}".encode(), hashlib.sha256).hexdigest()
 
     async def _issue(self, purpose: str, ident: Identifier, ip: str | None, *, mxid: str | None = None,
-                     display_name: str | None = None) -> dict:
+                     display_name: str | None = None, invite_hash: str | None = None) -> dict:
         await self._rate_limit(ident, ip)
         vid = secrets.token_urlsafe(18)
         code = f"{secrets.randbelow(10**6):06d}"
         await self.db.add_verification(vid, purpose, ident.channel, ident.value, self._hash(vid, code),
-                                       self.now() + self.cfg.code_ttl_seconds, mxid=mxid, display_name=display_name)
+                                       self.now() + self.cfg.code_ttl_seconds, mxid=mxid, display_name=display_name,
+                                       invite_hash=invite_hash)
         out = {"verification_id": vid, "channel": ident.channel, "expires_in": self.cfg.code_ttl_seconds}
         if ident.channel == "email":
             assert self.mailer
@@ -130,12 +131,42 @@ class LoginService:
         name = " ".join(str(body.get("display_name") or "").split())[:MAX_NAME]
         if not name:
             raise ServiceError(400, "bad_name", "Enter your name.")
-        token = str(body.get("join_token") or "").strip()
-        if not token or not await self.mas.registration_token_valid(token):
-            raise ServiceError(403, "bad_join_token", "That join code isn't valid. Ask the group admin for one.")
+        invite_hash = await self._check_join(body)
         if await self.db.account_by(ident.field, ident.value):
             raise ServiceError(409, "already_registered", "That's already registered. Sign in instead.")
-        return await self._issue("signup", ident, ip, display_name=name)
+        return await self._issue("signup", ident, ip, display_name=name, invite_hash=invite_hash)
+
+    async def _check_join(self, body: dict) -> str | None:
+        """Sign-up needs a one-time invite or (if allowed) the shared join token. Returns the invite's hash.
+        The invite is only checked here; it's spent when the account is created, so a failed or
+        abandoned verification doesn't burn it."""
+        invite = str(body.get("invite") or "").strip()
+        if invite:
+            h = self._invite_hash(invite)
+            if await self.db.live_invite(h, self.now()) is None:
+                raise ServiceError(403, "bad_invite",
+                                   "That invite link has expired or was already used. Ask the group admin for a new one.")
+            return h
+        token = str(body.get("join_token") or "").strip()
+        if not self.cfg.allow_join_token:
+            raise ServiceError(403, "bad_invite", "Sign up with the invite link the group admin sent you.")
+        if not token or not await self.mas.registration_token_valid(token):
+            raise ServiceError(403, "bad_join_token", "That join code isn't valid. Ask the group admin for one.")
+        return None
+
+    # ---- invites --------------------------------------------------------------------
+
+    def _invite_hash(self, code: str) -> str:
+        return hmac.new(self.cfg.code_secret.encode(), f"invite:{code}".encode(), hashlib.sha256).hexdigest()
+
+    async def create_invite(self, created_by: str | None, note: str | None = None) -> dict:
+        if not self.cfg.public_url:
+            raise ServiceError(400, "invites_disabled", "Invite links need app.public_url in login.yaml.")
+        code = secrets.token_urlsafe(16)  # 128 bits: not guessable, so no rate limit needed on checks
+        expires_at = self.now() + self.cfg.invite_ttl_seconds
+        await self.db.add_invite(self._invite_hash(code), created_by, (note or "")[:100] or None, self.now(), expires_at)
+        log.info("invite created by %s (expires in %d days)", created_by, self.cfg.invite_ttl_seconds // 86400)
+        return {"code": code, "url": f"{self.cfg.public_url}/join/{code}", "expires_at": expires_at}
 
     async def start_login(self, body: dict, ip: str | None) -> dict:
         ident = self.identifier(body)
@@ -232,11 +263,16 @@ class LoginService:
         ident = Identifier(v["channel"], v["identifier"])
         phone = ident.value if ident.channel == "sms" else None
         if v["purpose"] == "signup" and not v["mxid"]:
+            if v.get("invite_hash") and not await self.db.use_invite(v["invite_hash"], v["id"], self.now()):
+                raise ServiceError(410, "bad_invite",
+                                   "That invite link has expired or was already used. Ask the group admin for a new one.")
             username, user_id = await self._create_user(v["display_name"])
             mxid = f"@{username}:{self.cfg.domain}"
             # Recorded first, so a retry after a later failure reuses this account.
             await self.db.execute("UPDATE verifications SET mxid=? WHERE id=?", (mxid, v["id"]))
             await self.db.upsert_account(mxid, user_id, username, code_managed=1, **{ident.field: ident.value})
+            if v.get("invite_hash"):
+                await self.db.set_invite_user(v["invite_hash"], mxid)
         else:
             mxid = v["mxid"]
             username = mxid[1:].split(":", 1)[0]

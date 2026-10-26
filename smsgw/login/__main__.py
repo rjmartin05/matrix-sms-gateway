@@ -1,4 +1,5 @@
-"""Entrypoint: python -m smsgw.login -c /data/login.yaml [link-account MXID (--email E | --phone P)]"""
+"""Entrypoint: python -m smsgw.login -c /data/login.yaml
+    [link-account MXID (--email E | --phone P) | create-invite [--note TEXT]]"""
 
 from __future__ import annotations
 
@@ -53,6 +54,10 @@ async def run(cfg: config_mod.LoginConfig, command: argparse.Namespace) -> int:
             await svc.admin_link(command.mxid, ident)
             print(f"{command.mxid} now signs in with codes sent via {ident.channel} ({ident.value})")
             return 0
+        if command.cmd == "create-invite":
+            inv = await svc.create_invite("cli", command.note)
+            print(f"{inv['url']}\n(one use, expires {time.strftime('%Y-%m-%d', time.gmtime(inv['expires_at']))} UTC)")
+            return 0
         return await serve(cfg, svc, db)
     except ServiceError as e:
         print(f"error: {e.message}", file=sys.stderr)
@@ -95,6 +100,8 @@ def cli() -> None:
     grp = link.add_mutually_exclusive_group(required=True)
     grp.add_argument("--email")
     grp.add_argument("--phone")
+    inv = sub.add_parser("create-invite", help="print a one-time sign-up link")
+    inv.add_argument("--note", help="who it's for (kept with the invite)")
     args = ap.parse_args()
     cfg = config_mod.load(args.config)
     logging.basicConfig(level=cfg.log_level.upper(), format="%(asctime)s %(levelname)s %(name)s: %(message)s")

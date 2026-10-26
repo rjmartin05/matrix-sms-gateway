@@ -37,6 +37,15 @@ email:
 app:
   name: Example Chat
   device_name: Example Chat app
+  # Invite links (docs/LOGIN.md "Invite links"). Leave public_url empty to turn them off.
+  public_url: ""                   # PLACEHOLDER: this service's public URL, e.g. https://login.example.com
+  android_package: ""              # PLACEHOLDER: the app's applicationId
+  android_cert_sha256: []          # PLACEHOLDER: Play Console > App integrity > App signing key SHA-256
+  # install_url: ""                # where /join sends people without the app; default: the Play listing
+
+invites:
+  ttl_days: 7
+  allow_join_token: true           # set false once everyone joins by invite link
 
 logging:
   level: INFO
