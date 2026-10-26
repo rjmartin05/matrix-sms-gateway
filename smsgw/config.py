@@ -148,6 +148,11 @@ def load(path: str) -> Config:
     invite_text = get("compliance", "invite_text", None) or None
     if invite_text and "STOP" not in invite_text:
         raise ConfigError("compliance.invite_text must tell people how to opt out (include STOP)")
+    if invite_text:
+        try:
+            invite_text.format(brand="", adder="", number="")
+        except (KeyError, IndexError, ValueError) as e:
+            raise ConfigError(f"compliance.invite_text: only {{brand}}, {{adder}} and {{number}} can be filled in ({e!r})")
 
     poll_style = get("matrix", "poll_style", "unstable")
     if poll_style not in ("stable", "unstable"):

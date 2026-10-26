@@ -1185,6 +1185,9 @@ class Bridge:
         if existing and existing.status == "app":
             return {"ok": False, "error": "uses_app", "message": f"{existing.display_name} already uses the app."}
         new = existing is None or existing.status == "removed"
+        if not new and not is_admin and existing.added_by != by:
+            # Re-adding someone renames them; only their adder or an admin may.
+            return {"ok": False, "error": "forbidden", "message": f"{existing.display_name} is already on the list."}
         if not self.cfg.sms_accounts:
             mxid = self.mx.ghost_mxid(number)
         elif existing and not new:

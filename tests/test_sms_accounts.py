@@ -106,6 +106,34 @@ async def test_invite_text_not_sent_once_removed(acc):
     assert texts_to(acc, DAVE) == []
 
 
+async def test_others_cant_rename_someone_on_the_list(acc):
+    await app_add(acc, ALICE, DAVE, "Dave Miller")
+    with pytest.raises(ServiceError) as e:
+        await app_add(acc, BOB, DAVE, "Not Dave")
+    assert e.value.status == 403
+    assert (await acc.db.get_member(ROOM, DAVE)).display_name == "Dave Miller"
+    assert (await app_add(acc, ADMIN, DAVE, "Dave M"))["ok"]
+
+
+def test_invite_text_placeholders_are_checked(tmp_path, monkeypatch):
+    from smsgw.config import ConfigError, load
+
+    for k in ("SMSGW_AS_TOKEN", "SMSGW_HS_TOKEN", "TELNYX_API_KEY", "TELNYX_PUBLIC_KEY"):
+        monkeypatch.setenv(k, "x")
+    base = (
+        "homeserver: {address: http://hs, domain: example.org}\n"
+        "public: {base_url: https://hook.example.org}\n"
+        "compliance: {brand: Example, contact_email: a@b.co, invite_text: '%s'}\n"
+        "rooms: [{room: '!r:example.org', number: '+15550000000'}]\n"
+    )
+    p = tmp_path / "c.yaml"
+    p.write_text(base % "{brand}: {name} added you. Reply STOP to opt out.")
+    with pytest.raises(ConfigError, match="invite_text"):
+        load(str(p))
+    p.write_text(base % "{brand}: {adder} added you. Reply JOIN, or STOP to opt out.")
+    assert load(str(p)).invite_text.startswith("{brand}")
+
+
 async def test_adder_can_remove_only_until_they_join(acc):
     await app_add(acc, ALICE, SUE, "Sue")
     await acc.sms(SUE, "JOIN")
