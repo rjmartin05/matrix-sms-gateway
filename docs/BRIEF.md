@@ -73,6 +73,7 @@ on, alias e.g. `#general:example.com`.
 **Hard rules**
 
 - Never send the first message to a number that hasn't texted JOIN (or START after opt-out).
+  Exception (D14): the one invite text in `compliance.invite_text`, if set, when someone is added.
 - STOP takes effect immediately; nothing else is sent except the opt-out confirmation.
 - Log opt-in/opt-out events permanently.
 - Handle Telnyx's own STOP behavior; don't double-send.

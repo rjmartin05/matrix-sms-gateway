@@ -60,6 +60,7 @@ class FakePort:
         self.pinned: list[str] = []
         self.redacted: list[tuple[str, str]] = []
         self.avatars: list[tuple[str, bytes, str]] = []
+        self.state: dict[tuple[str, str, str], dict] = {}
 
     def ghost_mxid(self, number: str) -> str:
         return f"@sms_{number.lstrip('+')}:{DOMAIN}"
@@ -72,8 +73,11 @@ class FakePort:
     async def resolve_room(self, room: str) -> str:
         return room
 
-    async def ensure_ghost(self, number: str, displayname: str) -> None:
-        self.displaynames[self.ghost_mxid(number)] = displayname
+    async def bot_joined(self, room_id: str) -> bool:
+        return self.bot_mxid in self.rooms.get(room_id, {})
+
+    async def set_state(self, room_id: str, etype: str, content: dict, state_key: str = "") -> None:
+        self.state[(room_id, etype, state_key)] = content
 
     async def set_displayname(self, mxid: str, name: str) -> None:
         self.displaynames[mxid] = name

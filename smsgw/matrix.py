@@ -51,9 +51,16 @@ def event_to_dict(evt: Event) -> dict:
 
 
 class StateStore(ASStateStore, MemoryStateStore):
-    def __init__(self) -> None:
+    def __init__(self, ghost_re: re.Pattern | None = None, bot_mxid: str | None = None) -> None:
         ASStateStore.__init__(self)
         MemoryStateStore.__init__(self)
+        self.ghost_re, self.bot_mxid = ghost_re, bot_mxid
+
+    async def is_registered(self, user_id: UserID) -> bool:
+        # Real accounts (D14 SMS members) already exist: mautrix must never try to register them.
+        if self.ghost_re is not None and user_id != self.bot_mxid and not self.ghost_re.match(user_id):
+            return True
+        return await super().is_registered(user_id)
 
 
 def _image_size(data: bytes) -> tuple[int, int] | None:
@@ -69,6 +76,9 @@ def _image_size(data: bytes) -> tuple[int, int] | None:
 class MautrixPort:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
+        self._ghost_re = re.compile(
+            rf"^@{re.escape(cfg.ghost_prefix)}(\d{{8,15}}):{re.escape(cfg.domain)}$"
+        )
         self.az = AppService(
             server=cfg.homeserver_url,
             domain=cfg.domain,
@@ -76,13 +86,10 @@ class MautrixPort:
             hs_token=cfg.hs_token,
             bot_localpart=cfg.bot_localpart,
             id=cfg.as_id,
-            state_store=StateStore(),
+            state_store=StateStore(self._ghost_re, f"@{cfg.bot_localpart}:{cfg.domain}"),
             bridge_name="sms",
         )
         self.bot_mxid = str(self.az.bot_mxid)
-        self._ghost_re = re.compile(
-            rf"^@{re.escape(cfg.ghost_prefix)}(\d{{8,15}}):{re.escape(cfg.domain)}$"
-        )
 
     # ---- lifecycle ------------------------------------------------------------------
 
@@ -116,6 +123,7 @@ class MautrixPort:
         m = self._ghost_re.match(mxid or "")
         return f"+{m.group(1)}" if m else None
 
+
     # ---- MatrixPort -----------------------------------------------------------------
 
     async def resolve_room(self, room: str) -> str:
@@ -123,11 +131,6 @@ class MautrixPort:
             return room
         info = await self.az.intent.resolve_room_alias(RoomAlias(room))
         return str(info.room_id)
-
-    async def ensure_ghost(self, number: str, displayname: str) -> None:
-        intent = self.intent(self.ghost_mxid(number))
-        await intent.ensure_registered()
-        await intent.set_displayname(displayname)
 
     async def set_displayname(self, mxid: str, name: str) -> None:
         intent = self.intent(mxid)
@@ -271,6 +274,12 @@ class MautrixPort:
             out[str(mxid)] = (m.displayname if m and m.displayname else str(mxid)[1:].split(":", 1)[0])
         return out
 
+    async def bot_joined(self, room_id: str) -> bool:
+        try:
+            return self.bot_mxid in await self.joined_members(room_id)
+        except (MForbidden, MNotFound):
+            return False
+
     async def display_name(self, room_id: str, mxid: str) -> str:
         try:
             ev = await self.az.intent.get_state_event(RoomID(room_id), EventType.ROOM_MEMBER, mxid)
@@ -307,6 +316,10 @@ class MautrixPort:
             invitees=[UserID(invitee)],
         )
         return str(room_id)
+
+    async def set_state(self, room_id: str, etype: str, content: dict, state_key: str = "") -> None:
+        event_type = EventType.find(etype, EventType.Class.STATE)
+        await self.az.intent.send_state_event(RoomID(room_id), event_type, content, state_key=state_key)
 
     async def pin(self, room_id: str, event_id: str) -> None:
         bot = self.az.intent

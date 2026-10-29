@@ -98,6 +98,18 @@ def build_public_app(svc: LoginService, client_ip_header: str | None) -> web.App
     async def poll(request):
         return await svc.poll(request.match_info["vid"])
 
+    @handler
+    async def sms_members_list(request):
+        return await svc.sms_members(_bearer(request), "list", {"room_id": request.query.get("room_id", "")})
+
+    @handler
+    async def sms_members_add(request):
+        return await svc.sms_members(_bearer(request), "add", await _body(request))
+
+    @handler
+    async def sms_members_remove(request):
+        return await svc.sms_members(_bearer(request), "remove", await _body(request))
+
     async def health(_: web.Request) -> web.Response:
         return web.Response(text="ok")
 
@@ -134,6 +146,9 @@ def build_public_app(svc: LoginService, client_ip_header: str | None) -> web.App
     app.router.add_post("/v1/switch", switch)
     app.router.add_post("/v1/verify", verify)
     app.router.add_get("/v1/verify/{vid}", poll)
+    app.router.add_get("/v1/sms-members", sms_members_list)
+    app.router.add_post("/v1/sms-members", sms_members_add)
+    app.router.add_post("/v1/sms-members/remove", sms_members_remove)
     app.router.add_get("/healthz", health)
     return app
 
@@ -163,6 +178,20 @@ def build_internal_app(svc: LoginService, secret: str) -> web.Application:
         except ServiceError as e:
             return _json_error(e)
 
+    async def sms_accounts(request: web.Request) -> web.Response:
+        if not hmac.compare_digest(_bearer(request) or "", secret):
+            return web.Response(status=401)
+        try:
+            body = await _body(request)
+            if request.match_info.get("action") == "drop":
+                await svc.drop_sms_account(str(body.get("mxid") or ""))
+                return web.json_response({"ok": True})
+            return web.json_response(await svc.sms_account(str(body.get("name") or ""), str(body.get("number") or "")))
+        except ServiceError as e:
+            return _json_error(e)
+
     app.router.add_post("/internal/sms-code", sms_code)
     app.router.add_post("/internal/invites", invites)
+    app.router.add_post("/internal/sms-accounts", sms_accounts)
+    app.router.add_post("/internal/sms-accounts/{action:drop}", sms_accounts)
     return app

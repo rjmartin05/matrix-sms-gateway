@@ -12,6 +12,7 @@ appservice:
   bot_displayname: SMS Bridge
   ghost_prefix: sms_               # @sms_15555551234:example.com
   ghost_name_suffix: " (SMS)"
+  sms_accounts: false              # D14: SMS members are real accounts (docs/SMS_MEMBERS.md)
 
 public:
   base_url: https://sms-hook.example.com
@@ -30,6 +31,8 @@ telnyx:
 compliance:
   brand: Example Chat            # must match the 10DLC registration
   contact_email: help@example.com
+  # invite_text: "{brand}: {adder} added you to the group text. Reply JOIN to get group messages, STOP to opt out."
+  #                                # D14: one text when someone is added. Only once your 10DLC campaign covers it.
 
 rooms:
   # PLACEHOLDER: replace the number with the Telnyx 10DLC number (E.164). Startup refuses "X".
@@ -42,6 +45,8 @@ matrix:
   alerts_room: null                # room ID/alias for bridge alerts; null = log only
   failure_alert_threshold: 3
   poll_style: unstable             # event types for bot-created polls (see docs/VERIFIED.md)
+  members_can_add: true            # any group member can !sms add / add from the app (D14)
+  adds_per_day: 20                 # per non-admin
 
 sms:
   reply_quote_format: 'Re {name}: "{quote}" '   # D7: keep GSM-7 only (a non-GSM char forces 70-char segments)
