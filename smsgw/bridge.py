@@ -151,6 +151,8 @@ class Bridge:
         self.inbound_wakeup = asyncio.Event()
         self.matrix_wakeup = asyncio.Event()
         self._alert_last: dict[str, float] = {}
+        # Serializes "make a not-yet-joined member leave" with "they texted JOIN" per (room, mxid).
+        self._membership_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._stopped = False
         queue.on_alert = self.alert
         queue.on_blocked = self.on_send_blocked
@@ -378,7 +380,8 @@ class Bridge:
             member.number, event, source, room_id=member.room_id, keyword=keyword, provider_message_id=provider_id
         )
         await self.ensure_profile(member)
-        await self.mx.join(member.room_id, member.mxid)
+        async with self._membership_lock(member.room_id, member.mxid):
+            await self.mx.join(member.room_id, member.mxid)
         await self.refresh_sms()
 
     async def app_user(self, mxid: str, number: str | None) -> None:
@@ -840,11 +843,16 @@ class Bridge:
         login service created the account, and would show the group someone who isn't getting texts."""
         if room_id not in self.number_by_room:
             return
-        m = await self.db.get_member_by_mxid(room_id, mxid)
-        if m is None or m.status in ("opted_in", "app"):
-            return
-        log.info("%s joined the group while %s; making them leave until they text JOIN", mxid, m.status)
-        await self.mx.leave(room_id, mxid)
+        async with self._membership_lock(room_id, mxid):
+            # Read under the lock: a JOIN text sets opted_in before it takes the lock to join.
+            m = await self.db.get_member_by_mxid(room_id, mxid)
+            if m is None or m.status in ("opted_in", "app"):
+                return
+            log.info("%s joined the group while %s; making them leave until they text JOIN", mxid, m.status)
+            await self.mx.leave(room_id, mxid)
+
+    def _membership_lock(self, room_id: str, mxid: str) -> asyncio.Lock:
+        return self._membership_locks.setdefault((room_id, mxid), asyncio.Lock())
 
     async def _handle_invite(self, evt: dict) -> None:
         target = evt.get("state_key", "")
@@ -1220,6 +1228,12 @@ class Bridge:
             mxid = acct["mxid"]
         m = await self.db.upsert_member(room_id, number, mxid, name, by)
         await self.ensure_profile(m, force=True)
+        if self.cfg.sms_accounts and m.status not in ("opted_in", "app"):
+            try:
+                if mxid in await self.mx.joined_members(room_id):
+                    await self._leave_if_not_opted_in(room_id, mxid)
+            except Exception:
+                log.exception("checking whether %s was auto-joined failed", mxid)
         await self.db.log_consent(number, "allowlisted", "admin" if is_admin else "member", room_id=room_id,
                                   detail=f"by {by}")
         await self.refresh_sms()

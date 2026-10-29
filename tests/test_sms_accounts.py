@@ -298,3 +298,41 @@ async def test_joins_of_other_people_are_left_alone(acc):
     other = join_event("@dave.miller:example.org")
     other["room_id"] = "!elsewhere:example.org"
     assert not await acc.bridge.wants_matrix_event(other)
+
+
+async def test_auto_join_before_the_member_row_exists(acc):
+    """The account can be auto-joined while the add is still in progress (no member row yet)."""
+    real = acc.bridge.sms_account
+
+    async def create_and_autojoin(name, number):
+        acct = await real(name, number)
+        acc.port.rooms[ROOM][acct["mxid"]] = name
+        await acc.matrix(join_event(acct["mxid"]))  # arrives before upsert_member: ignored
+        return acct
+
+    acc.bridge.sms_account = create_and_autojoin
+    res = await app_add(acc, ALICE, DAVE, "Dave Miller")
+    assert res["mxid"] not in acc.port.rooms[ROOM]
+
+
+async def test_join_text_during_a_leave_keeps_them_in(acc):
+    import asyncio
+
+    res = await app_add(acc, ALICE, DAVE, "Dave Miller")
+    dave = res["mxid"]
+    acc.port.rooms[ROOM][dave] = "Dave Miller"
+    real_leave, started, release = acc.port.leave, asyncio.Event(), asyncio.Event()
+
+    async def slow_leave(room_id, mxid):
+        started.set()
+        await release.wait()
+        await real_leave(room_id, mxid)
+
+    acc.port.leave = slow_leave
+    leaving = asyncio.create_task(acc.matrix(join_event(dave)))
+    await started.wait()
+    joining = asyncio.create_task(acc.sms(DAVE, "JOIN"))
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.gather(leaving, joining)
+    assert dave in acc.port.rooms[ROOM]
