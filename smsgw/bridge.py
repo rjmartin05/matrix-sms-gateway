@@ -793,7 +793,11 @@ class Bridge:
         in rooms the bot is in are kept; everything else is dropped unread."""
         etype = evt.get("type")
         if etype == "m.room.member":
-            return evt.get("content", {}).get("membership") == "invite" and (
+            membership = evt.get("content", {}).get("membership")
+            if membership == "join":
+                # A server-side auto-join can put an SMS account in the group before it texts JOIN.
+                return self.cfg.sms_accounts and evt.get("room_id", "") in self.number_by_room
+            return membership == "invite" and (
                 evt.get("state_key") == self.mx.bot_mxid or self.is_ghost(evt.get("state_key", ""))
             )
         if etype not in ("m.room.message",) + POLL_START + POLL_RESPONSE + POLL_END:
@@ -812,7 +816,10 @@ class Bridge:
         sender = evt.get("sender", "")
         content = evt.get("content") or {}
         if etype == "m.room.member":
-            await self._handle_invite(evt)
+            if content.get("membership") == "join":
+                await self._leave_if_not_opted_in(room_id, evt.get("state_key", ""))
+            else:
+                await self._handle_invite(evt)
             return
         if room_id in self.number_by_room:
             await self._handle_group_event(etype, room_id, sender, content, evt)
@@ -826,6 +833,18 @@ class Bridge:
             body = (content.get("body") or "").strip()
             if body.startswith("!"):
                 await self._handle_bang_command(room_id, sender, body, in_group=False)
+
+    async def _leave_if_not_opted_in(self, room_id: str, mxid: str) -> None:
+        """SMS members join the group when they text JOIN (_opt_in sets opted_in first). A join by an
+        SMS account in any other state came from elsewhere, typically Synapse's auto_join_rooms when the
+        login service created the account, and would show the group someone who isn't getting texts."""
+        if room_id not in self.number_by_room:
+            return
+        m = await self.db.get_member_by_mxid(room_id, mxid)
+        if m is None or m.status in ("opted_in", "app"):
+            return
+        log.info("%s joined the group while %s; making them leave until they text JOIN", mxid, m.status)
+        await self.mx.leave(room_id, mxid)
 
     async def _handle_invite(self, evt: dict) -> None:
         target = evt.get("state_key", "")

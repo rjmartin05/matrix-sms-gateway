@@ -267,3 +267,34 @@ async def test_internal_endpoint_needs_the_secret(acc):
                          headers={"Authorization": f"Bearer {SECRET}"})
         assert r.status == 404
 
+
+
+def join_event(mxid):
+    return {"type": "m.room.member", "state_key": mxid, "sender": mxid, "content": {"membership": "join"}}
+
+
+async def test_auto_joined_sms_account_is_made_to_leave(acc):
+    """Synapse's auto_join_rooms can join a new account to the group before the person texts JOIN."""
+    res = await app_add(acc, ALICE, DAVE, "Dave Miller")
+    dave = res["mxid"]
+    evt = join_event(dave)
+    evt["room_id"] = ROOM
+    assert await acc.bridge.wants_matrix_event(evt)
+    acc.port.rooms[ROOM][dave] = "Dave Miller"
+    await acc.matrix(join_event(dave))
+    assert dave not in acc.port.rooms[ROOM]
+    # Once they text JOIN, they're in and stay in.
+    await acc.sms(DAVE, "JOIN")
+    assert dave in acc.port.rooms[ROOM]
+    left = len(acc.port.left)
+    await acc.matrix(join_event(dave))
+    assert dave in acc.port.rooms[ROOM] and len(acc.port.left) == left
+
+
+async def test_joins_of_other_people_are_left_alone(acc):
+    acc.port.rooms[ROOM][BOB] = "Bob"
+    await acc.matrix(join_event(BOB))
+    assert BOB in acc.port.rooms[ROOM]
+    other = join_event("@dave.miller:example.org")
+    other["room_id"] = "!elsewhere:example.org"
+    assert not await acc.bridge.wants_matrix_event(other)
