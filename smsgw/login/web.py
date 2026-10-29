@@ -99,6 +99,22 @@ def build_public_app(svc: LoginService, client_ip_header: str | None) -> web.App
         return await svc.poll(request.match_info["vid"])
 
     @handler
+    async def account(request):
+        return await svc.account(_bearer(request))
+
+    @handler
+    async def account_end_session(request):
+        return await svc.end_session(_bearer(request), await _body(request))
+
+    @handler
+    async def account_password(request):
+        return await svc.change_password(_bearer(request), await _body(request))
+
+    @handler
+    async def account_delete(request):
+        return await svc.delete_account(_bearer(request), await _body(request))
+
+    @handler
     async def sms_members_list(request):
         return await svc.sms_members(_bearer(request), "list", {"room_id": request.query.get("room_id", "")})
 
@@ -149,6 +165,10 @@ def build_public_app(svc: LoginService, client_ip_header: str | None) -> web.App
     app.router.add_get("/v1/sms-members", sms_members_list)
     app.router.add_post("/v1/sms-members", sms_members_add)
     app.router.add_post("/v1/sms-members/remove", sms_members_remove)
+    app.router.add_get("/v1/account", account)
+    app.router.add_post("/v1/account/sessions/end", account_end_session)
+    app.router.add_post("/v1/account/password", account_password)
+    app.router.add_post("/v1/account/delete", account_delete)
     app.router.add_get("/healthz", health)
     return app
 

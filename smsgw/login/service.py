@@ -388,6 +388,90 @@ class LoginService:
             raise ServiceError(status, res.get("error") or "refused", res.get("message") or "Couldn't do that.")
         return res
 
+    # ---- the signed-in person's own account, in the app instead of MAS's web pages ----
+
+    async def _me(self, access_token: str | None) -> tuple[str, str | None, str]:
+        """(mxid, device_id, MAS user id) of whoever owns ``access_token``."""
+        me = await self.matrix.whoami_device(access_token) if access_token else None
+        if me is None:
+            raise ServiceError(401, "unauthorized", "Sign in again.")
+        mxid, device = me
+        if not mxid.endswith(f":{self.cfg.domain}"):
+            raise ServiceError(403, "forbidden", "Only accounts on this server.")
+        user_id = await self.mas.user_by_username(mxid[1:].split(":", 1)[0])
+        if user_id is None:
+            raise ServiceError(404, "no_account", "That account no longer exists.")
+        return mxid, device, user_id
+
+    async def account(self, access_token: str | None) -> dict:
+        mxid, device, user_id = await self._me(access_token)
+        acct = await self.db.account_by("mxid", mxid)
+        sessions = sorted(await self.mas.active_sessions(user_id),
+                          key=lambda s: s.get("last_active") or s.get("created") or "", reverse=True)
+        emails = await self.mas.user_emails(user_id)
+        return {
+            "user_id": mxid,
+            "sign_in": "codes" if acct and acct["code_managed"] else "password",
+            "phone": acct["phone"] if acct else None,
+            "email": (acct["email"] if acct and acct["email"] else None) or (emails[0] if emails else None),
+            "sessions": [{"id": s["id"], "kind": s["kind"], "device_id": s["device_id"], "name": s["name"],
+                          "last_active": s["last_active"], "current": bool(device) and s["device_id"] == device}
+                         for s in sessions],
+        }
+
+    async def end_session(self, access_token: str | None, body: dict) -> dict:
+        _, device, user_id = await self._me(access_token)
+        kind, sid = str(body.get("kind") or ""), str(body.get("id") or "")
+        if kind not in ("compat", "oauth2") or not sid:
+            raise ServiceError(400, "bad_request", "Which device?")
+        # Only the caller's own active sessions are listed, so an ID from someone else isn't found.
+        mine = {(s["kind"], s["id"]): s for s in await self.mas.active_sessions(user_id)}
+        s = mine.get((kind, sid))
+        if s is None:
+            raise ServiceError(404, "not_found", "That device is already signed out.")
+        if device and s["device_id"] == device:
+            raise ServiceError(400, "current_session", "That's this phone. Use Sign out instead.")
+        await self.mas.finish_session(kind, sid)
+        return {"ok": True}
+
+    async def change_password(self, access_token: str | None, body: dict) -> dict:
+        mxid, _, user_id = await self._me(access_token)
+        acct = await self.db.account_by("mxid", mxid)
+        if acct and acct["code_managed"]:
+            raise ServiceError(400, "uses_codes", "You sign in with codes, so there's no password to change.")
+        current, new = str(body.get("current") or ""), str(body.get("new") or "")
+        if len(new) < 8:
+            raise ServiceError(400, "weak_password", "Use at least 8 characters.")
+        username = mxid[1:].split(":", 1)[0]
+        try:
+            # Checking the current password means signing in with it; that session is dropped at once.
+            sess = await self.matrix.password_login(username, current, self.cfg.device_name)
+        except UpstreamError as e:
+            if e.status in (401, 403):
+                raise ServiceError(403, "wrong_password", "Your current password isn't right.")
+            raise
+        try:
+            await self.matrix.logout(sess["access_token"])
+        except Exception as e:
+            log.warning("dropping the password-check session for %s failed: %s", mxid, e)
+        try:
+            await self.mas.set_password(user_id, new, check=True)
+        except UpstreamError as e:
+            if e.status == 400:
+                raise ServiceError(400, "weak_password", "Choose a stronger password.")
+            raise
+        log.info("password changed for %s", mxid)
+        return {"ok": True}
+
+    async def delete_account(self, access_token: str | None, body: dict) -> dict:
+        mxid, _, user_id = await self._me(access_token)
+        if str(body.get("confirm") or "") != mxid:
+            raise ServiceError(400, "confirm", "Confirm with your user ID to delete your account.")
+        await self.mas.deactivate(user_id)
+        await self.db.execute("DELETE FROM accounts WHERE mxid=?", (mxid,))
+        log.info("account %s deleted by its owner", mxid)
+        return {"ok": True}
+
     # ---- admin --------------------------------------------------------------------
 
     async def admin_link(self, mxid: str, ident: Identifier) -> None:
