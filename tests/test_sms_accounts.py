@@ -267,3 +267,72 @@ async def test_internal_endpoint_needs_the_secret(acc):
                          headers={"Authorization": f"Bearer {SECRET}"})
         assert r.status == 404
 
+
+
+def join_event(mxid):
+    return {"type": "m.room.member", "state_key": mxid, "sender": mxid, "content": {"membership": "join"}}
+
+
+async def test_auto_joined_sms_account_is_made_to_leave(acc):
+    """Synapse's auto_join_rooms can join a new account to the group before the person texts JOIN."""
+    res = await app_add(acc, ALICE, DAVE, "Dave Miller")
+    dave = res["mxid"]
+    evt = join_event(dave)
+    evt["room_id"] = ROOM
+    assert await acc.bridge.wants_matrix_event(evt)
+    acc.port.rooms[ROOM][dave] = "Dave Miller"
+    await acc.matrix(join_event(dave))
+    assert dave not in acc.port.rooms[ROOM]
+    # Once they text JOIN, they're in and stay in.
+    await acc.sms(DAVE, "JOIN")
+    assert dave in acc.port.rooms[ROOM]
+    left = len(acc.port.left)
+    await acc.matrix(join_event(dave))
+    assert dave in acc.port.rooms[ROOM] and len(acc.port.left) == left
+
+
+async def test_joins_of_other_people_are_left_alone(acc):
+    acc.port.rooms[ROOM][BOB] = "Bob"
+    await acc.matrix(join_event(BOB))
+    assert BOB in acc.port.rooms[ROOM]
+    other = join_event("@dave.miller:example.org")
+    other["room_id"] = "!elsewhere:example.org"
+    assert not await acc.bridge.wants_matrix_event(other)
+
+
+async def test_auto_join_before_the_member_row_exists(acc):
+    """The account can be auto-joined while the add is still in progress (no member row yet)."""
+    real = acc.bridge.sms_account
+
+    async def create_and_autojoin(name, number):
+        acct = await real(name, number)
+        acc.port.rooms[ROOM][acct["mxid"]] = name
+        await acc.matrix(join_event(acct["mxid"]))  # arrives before upsert_member: ignored
+        return acct
+
+    acc.bridge.sms_account = create_and_autojoin
+    res = await app_add(acc, ALICE, DAVE, "Dave Miller")
+    assert res["mxid"] not in acc.port.rooms[ROOM]
+
+
+async def test_join_text_during_a_leave_keeps_them_in(acc):
+    import asyncio
+
+    res = await app_add(acc, ALICE, DAVE, "Dave Miller")
+    dave = res["mxid"]
+    acc.port.rooms[ROOM][dave] = "Dave Miller"
+    real_leave, started, release = acc.port.leave, asyncio.Event(), asyncio.Event()
+
+    async def slow_leave(room_id, mxid):
+        started.set()
+        await release.wait()
+        await real_leave(room_id, mxid)
+
+    acc.port.leave = slow_leave
+    leaving = asyncio.create_task(acc.matrix(join_event(dave)))
+    await started.wait()
+    joining = asyncio.create_task(acc.sms(DAVE, "JOIN"))
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.gather(leaving, joining)
+    assert dave in acc.port.rooms[ROOM]
