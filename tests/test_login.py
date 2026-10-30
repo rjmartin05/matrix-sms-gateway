@@ -30,6 +30,8 @@ class FakeMas:
         self.emails: list[tuple[str, str]] = []
         self.tokens = {TOKEN}
         self.homeserver_taken: set[str] = set()
+        self.sessions: dict[str, dict] = {}  # id -> {kind, user_id, device_id, active}
+        self.deactivated: set[str] = set()
         self._ids = itertools.count(1)
 
     async def user_by_username(self, username):
@@ -42,8 +44,24 @@ class FakeMas:
         self.users[username] = uid
         return uid
 
-    async def set_password(self, user_id, password):
+    async def set_password(self, user_id, password, *, check=False):
+        if check and password == "password":
+            raise UpstreamError("MAS set-password", 400)
         self.passwords[user_id] = password
+
+    async def user_emails(self, user_id):
+        return [e for u, e in self.emails if u == user_id]
+
+    async def active_sessions(self, user_id):
+        return [{"id": sid, "kind": x["kind"], "device_id": x["device_id"], "user_id": x["user_id"],
+                 "name": "Group Chat app", "last_active": None, "created": sid}
+                for sid, x in self.sessions.items() if x["user_id"] == user_id and x["active"]]
+
+    async def finish_session(self, kind, session_id):
+        self.sessions[session_id]["active"] = False
+
+    async def deactivate(self, user_id):
+        self.deactivated.add(user_id)
 
     async def add_email(self, user_id, email):
         self.emails.append((user_id, email))
@@ -57,6 +75,7 @@ class FakeMatrix:
         self.mas = mas
         self.tokens: dict[str, str] = {}  # access token -> mxid
         self.displaynames: dict[str, str] = {}
+        self.devices: dict[str, str] = {}  # access token -> device ID
         self.fail_next = 0
         self._ids = itertools.count(1)
 
@@ -67,13 +86,26 @@ class FakeMatrix:
         uid = self.mas.users.get(username)
         if uid is None or self.mas.passwords.get(uid) != password:
             raise UpstreamError("Matrix login", 403)
-        tok = f"syt_{next(self._ids)}"
+        n = next(self._ids)
+        tok, device = f"syt_{n}", f"DEV{n}"
         self.tokens[tok] = f"@{username}:{DOMAIN}"
+        self.devices[tok] = device
+        self.mas.sessions[f"sess{n}"] = {"kind": "compat", "user_id": uid, "device_id": device, "active": True}
         return {"user_id": f"@{username}:{DOMAIN}", "access_token": tok, "refresh_token": "ref",
-                "device_id": "DEV", "expires_in_ms": 300000}
+                "device_id": device, "expires_in_ms": 300000}
 
     async def whoami(self, token):
         return self.tokens.get(token)
+
+    async def whoami_device(self, token):
+        return (self.tokens[token], self.devices.get(token)) if token in self.tokens else None
+
+    async def logout(self, token):
+        device = self.devices.pop(token, None)
+        self.tokens.pop(token, None)
+        for x in self.mas.sessions.values():
+            if x["device_id"] == device:
+                x["active"] = False
 
     async def set_displayname(self, token, mxid, name):
         self.displaynames[mxid] = name
