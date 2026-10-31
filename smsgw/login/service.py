@@ -333,6 +333,9 @@ class LoginService:
                 raise ServiceError(404, "no_account", "That account no longer exists.")
             if acct is not None and acct["sms_status"] == "removed":
                 raise ServiceError(404, "no_account", "That account no longer exists.")
+            if v["purpose"] == "login" and acct is not None and not acct["code_managed"]:
+                # Started before they moved to a password; finishing it would overwrite that password.
+                raise ServiceError(404, "no_account", "No account signs in with that. Sign up, or use your password.")
             # switch: from here on the old password stops working; codes are the way in.
             # An SMS member's account (D14) becomes an ordinary app account at its first sign-in.
             await self.db.upsert_account(mxid, user_id, username, code_managed=1, sms_status=None,

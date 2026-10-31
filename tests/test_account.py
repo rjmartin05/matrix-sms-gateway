@@ -114,6 +114,22 @@ async def test_use_password_confirms_by_phone_first(svc):  # noqa: F811
     assert await svc.use_password(token, body) == {"ok": True}
 
 
+async def test_older_login_code_cannot_undo_a_password(svc):  # noqa: F811
+    token = (await signup_email(svc))["access_token"]
+    pending = await svc.start_login({"email": EMAIL}, "1.2.3.4")
+    login_code = svc.mailer.last_code()
+    v = await svc.start_use_password(token, "1.2.3.4")
+    await svc.verify_code(v["verification_id"], svc.mailer.last_code())
+    await svc.use_password(token, {"verification_id": v["verification_id"], "new": "a-new-password"})
+
+    await svc.db.execute("UPDATE verifications SET status='pending' WHERE id=?", (pending["verification_id"],))
+    with pytest.raises(ServiceError) as e:
+        await svc.verify_code(pending["verification_id"], login_code)
+    assert e.value.code == "no_account"
+    assert (await svc.account(token))["sign_in"] == "password"
+    assert await svc.matrix.password_login("dave.miller", "a-new-password", "tablet")
+
+
 async def test_use_password_refuses_others_and_weak_passwords(svc):  # noqa: F811
     token = (await signup_email(svc))["access_token"]
     v = await svc.start_use_password(token, "1.2.3.4")
