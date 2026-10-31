@@ -111,6 +111,14 @@ def build_public_app(svc: LoginService, client_ip_header: str | None) -> web.App
         return await svc.change_password(_bearer(request), await _body(request))
 
     @handler
+    async def account_use_password_start(request):
+        return await svc.start_use_password(_bearer(request), ip(request))
+
+    @handler
+    async def account_use_password(request):
+        return await svc.use_password(_bearer(request), await _body(request))
+
+    @handler
     async def account_delete(request):
         return await svc.delete_account(_bearer(request), await _body(request))
 
@@ -135,7 +143,7 @@ def build_public_app(svc: LoginService, client_ip_header: str | None) -> web.App
         code = request.match_info["code"]
         if not _INVITE_RE.match(code) or not cfg.android_package:
             raise web.HTTPNotFound()
-        # Play hands "referrer" to the app at install time, so a future app version can pick up the code.
+        # Play hands "referrer" to the app at install time, and the app picks up the code on first open.
         query = urlencode({"id": cfg.android_package, "referrer": f"invite={code}"})
         play = cfg.install_url or f"https://play.google.com/store/apps/details?{query}"
         market = f"market://details?{query}" if not cfg.install_url else play
@@ -168,6 +176,8 @@ def build_public_app(svc: LoginService, client_ip_header: str | None) -> web.App
     app.router.add_get("/v1/account", account)
     app.router.add_post("/v1/account/sessions/end", account_end_session)
     app.router.add_post("/v1/account/password", account_password)
+    app.router.add_post("/v1/account/use-password/start", account_use_password_start)
+    app.router.add_post("/v1/account/use-password", account_use_password)
     app.router.add_post("/v1/account/delete", account_delete)
     app.router.add_get("/healthz", health)
     return app

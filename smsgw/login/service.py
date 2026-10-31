@@ -193,6 +193,43 @@ class LoginService:
             raise ServiceError(409, "already_registered", "Another account already uses that.")
         return await self._issue("switch", ident, ip, mxid=mxid)
 
+    async def start_use_password(self, access_token: str | None, ip: str | None) -> dict:
+        """Codes to password, confirmed with a code first so a borrowed, unlocked phone can't do it.
+        ``use_password`` finishes it, since each code login would overwrite a password set earlier."""
+        mxid, _, _ = await self._me(access_token)
+        acct = await self.db.account_by("mxid", mxid)
+        if acct is None or not acct["code_managed"]:
+            raise ServiceError(400, "uses_password", "You already sign in with a password.")
+        if acct["phone"] and self.cfg.sms_number:
+            ident = Identifier("sms", acct["phone"])
+        elif acct["email"] and self.mailer is not None:
+            ident = Identifier("email", acct["email"])
+        else:
+            raise ServiceError(400, "no_contact", "There's no phone or email to confirm this with.")
+        return await self._issue("password", ident, ip, mxid=mxid)
+
+    async def use_password(self, access_token: str | None, body: dict) -> dict:
+        mxid, _, user_id = await self._me(access_token)
+        new = str(body.get("new") or "")
+        if len(new) < 8:
+            raise ServiceError(400, "weak_password", "Use at least 8 characters.")
+        vid = str(body.get("verification_id") or "")
+        v = await self._live(vid)
+        if v["purpose"] != "password" or v["mxid"] != mxid or v["status"] != "verified":
+            raise ServiceError(403, "not_confirmed", "Confirm with a code first.")
+        if self.now() > v["expires_at"]:
+            raise ServiceError(410, "expired", "That code has expired. Start again.")
+        try:
+            await self.mas.set_password(user_id, new, check=True)
+        except UpstreamError as e:
+            if e.status == 400:  # the code still stands, so they can pick another password
+                raise ServiceError(400, "weak_password", "Choose a stronger password.")
+            raise
+        await self.db.transition(vid, "verified", "used")
+        await self.db.upsert_account(mxid, user_id, mxid[1:].split(":", 1)[0], code_managed=0)
+        log.info("%s now signs in with a password", mxid)
+        return {"ok": True}
+
     # ---- checking codes ------------------------------------------------------------
 
     async def _live(self, vid: str) -> dict:
@@ -252,6 +289,8 @@ class LoginService:
     # ---- completing ----------------------------------------------------------------
 
     async def _complete(self, vid: str) -> dict:
+        if (await self.db.get_verification(vid))["purpose"] == "password":
+            return {"status": "verified"}  # no session: use_password finishes this one
         if not await self.db.transition(vid, "verified", "used"):
             raise ServiceError(409, "already_used", "That code was already used. Start again.")
         v = dict(await self.db.get_verification(vid))
