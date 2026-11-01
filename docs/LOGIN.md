@@ -9,6 +9,9 @@ container (`python -m smsgw.login`), from the same image as the bridge.
 - **Sign in:** email or phone, then verify.
 - **Switch:** someone signed in with a password (in any client) can switch their account to codes.
   Their password stops working; codes are the way in from then on.
+- **Switch back:** someone on codes can go to a password from the app, confirmed with a code. Codes stop
+  working for them until they switch again. It's one or the other, per person, because every code login
+  replaces the password.
 - **Phone members move off SMS:** when someone verifies a phone number the bridge knows, the bridge
   stops texting it and their SMS ghost leaves the room. Texting START or JOIN turns texts back on.
 
@@ -49,9 +52,13 @@ Base URL: the service's public hostname. JSON in and out. Errors: HTTP status +
 | `POST /v1/switch` | header `Authorization: Bearer <the app's current access token>`; `email` or `phone` | a verification |
 | `POST /v1/verify` | `verification_id`, `code` (email codes) | a session |
 | `GET /v1/verify/{verification_id}` | (phone codes: poll every 2–3 s) | `{"status": "pending"}` or a session |
+| `POST /v1/account/use-password/start` | header as above | a verification (the account's phone, else its email) |
+| `POST /v1/account/use-password` | header as above; `verification_id`, `new` | `{"ok": true}` |
 
 A verification: `{"verification_id", "channel": "email"|"sms", "expires_in"}`, plus for phone codes
 `"sms_to"` (E.164) and `"sms_body"`. Open `sms:<sms_to>?body=<sms_body, URL-encoded>`.
+
+Verifying a `use-password` code gives `{"status": "verified"}` instead of a session.
 
 A session: `{"status": "ok", "homeserver", "user_id", "device_id", "access_token", "refresh_token",
 "expires_in_ms"}`. Give these to the Matrix SDK as an existing login; refresh as usual.
@@ -60,7 +67,7 @@ Adding people by text from the app (`/v1/sms-members`): see [SMS_MEMBERS.md](SMS
 
 Error codes worth handling: `bad_invite`, `bad_join_token`, `already_registered`, `no_account`, `wrong_code`,
 `too_many_attempts`, `expired`, `already_used`, `rate_limited`, `try_again` (retry the same request),
-`email_failed`.
+`email_failed`, `uses_password`, `no_contact`, `not_confirmed`, `weak_password`.
 
 ## Invite links
 
@@ -75,8 +82,8 @@ create-invite --note Sue`.
 - **Opens in the app.** The app declares a verified Android App Link for `https://<this host>/join/`, and
   this service publishes `/.well-known/assetlinks.json`. With the app installed, Android opens the
   sign-up screen with the code filled in; no browser. Without the app, the link lands on a tiny page that
-  jumps straight to Google Play. It passes `referrer=invite=<code>` to Play, for a later app version to
-  pick up. The page doesn't check the code.
+  jumps straight to Google Play. It passes `referrer=invite=<code>` to Play, and the app picks that up
+  on first open. The page doesn't check the code.
 - **Turning off the shared code:** once everyone joins by invite, set `invites.allow_join_token: false`.
   Sign-up then needs an invite. Accounts and password sign-up on MAS's own page are unaffected; MAS's
   registration token still gates that.
@@ -182,8 +189,8 @@ The password keeps working until their first code login.
 
 - MAS doesn't count sign-ups made here against the registration token's usage limit (its admin API
   can't increment it). Revoke or rotate the join token in MAS when you want to stop sign-ups.
-- An SMS sender ID can in principle be spoofed. For a private group that's acceptable; the join code
-  still gates sign-up.
+- An SMS sender ID can in principle be spoofed. The join code or invite still gates sign-up, but phone
+  sign-in to an existing account relies on the sender ID alone.
 - Every code login reaches MAS from the service's address, so MAS's per-IP login rate limit applies
   to all of them together. Fine for a small group; raise `rate_limiting.login.per_ip` in MAS if a
   burst of sign-ups hits `try_again`.

@@ -5,7 +5,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from smsgw.login.service import ServiceError
 from smsgw.login.web import build_public_app
-from tests.test_login import EMAIL, signup_email, svc  # noqa: F401  (svc is a fixture)
+from tests.test_login import EMAIL, TOKEN, signup_email, sms_code_of, svc  # noqa: F401  (svc is a fixture)
 
 
 async def password_account(svc, username="pat", password="their-own-password"):  # noqa: F811
@@ -74,6 +74,77 @@ async def test_code_accounts_have_no_password_to_change(svc):  # noqa: F811
     with pytest.raises(ServiceError) as e:
         await svc.change_password(sess["access_token"], {"current": "x", "new": "a-new-password"})
     assert e.value.code == "uses_codes"
+
+
+async def test_codes_to_password_and_back(svc):  # noqa: F811
+    token = (await signup_email(svc))["access_token"]
+    v = await svc.start_use_password(token, "1.2.3.4")
+    assert await svc.verify_code(v["verification_id"], svc.mailer.last_code()) == {"status": "verified"}
+    body = {"verification_id": v["verification_id"], "new": "a-new-password"}
+    assert await svc.use_password(token, body) == {"ok": True}
+
+    assert (await svc.account(token))["sign_in"] == "password"
+    assert await svc.matrix.password_login("dave.miller", "a-new-password", "tablet")
+    with pytest.raises(ServiceError) as e:
+        await svc.start_login({"email": EMAIL}, "1.2.3.4")
+    assert e.value.code == "no_account"
+    with pytest.raises(ServiceError) as e:  # the code was spent
+        await svc.use_password(token, body)
+    assert e.value.code == "already_used"
+
+    v = await svc.start_switch(token, {"email": EMAIL}, "1.2.3.4")
+    await svc.verify_code(v["verification_id"], svc.mailer.last_code())
+    assert (await svc.account(token))["sign_in"] == "codes"
+
+
+async def test_use_password_confirms_by_phone_first(svc):  # noqa: F811
+    v = await svc.start_signup({"display_name": "Dave", "phone": "+15550100123", "join_token": TOKEN}, "1.2.3.4")
+    assert await svc.sms_code("+15550100123", sms_code_of(v))
+    token = (await svc.poll(v["verification_id"]))["access_token"]
+
+    v = await svc.start_use_password(token, "1.2.3.4")
+    assert v["channel"] == "sms"
+    assert await svc.poll(v["verification_id"]) == {"status": "pending"}
+    body = {"verification_id": v["verification_id"], "new": "a-new-password"}
+    with pytest.raises(ServiceError) as e:  # no code yet
+        await svc.use_password(token, body)
+    assert e.value.code == "not_confirmed"
+    assert await svc.sms_code("+15550100123", sms_code_of(v))
+    assert await svc.poll(v["verification_id"]) == {"status": "verified"}
+    assert await svc.use_password(token, body) == {"ok": True}
+
+
+async def test_older_login_code_cannot_undo_a_password(svc):  # noqa: F811
+    token = (await signup_email(svc))["access_token"]
+    pending = await svc.start_login({"email": EMAIL}, "1.2.3.4")
+    login_code = svc.mailer.last_code()
+    v = await svc.start_use_password(token, "1.2.3.4")
+    await svc.verify_code(v["verification_id"], svc.mailer.last_code())
+    await svc.use_password(token, {"verification_id": v["verification_id"], "new": "a-new-password"})
+
+    await svc.db.execute("UPDATE verifications SET status='pending' WHERE id=?", (pending["verification_id"],))
+    with pytest.raises(ServiceError) as e:
+        await svc.verify_code(pending["verification_id"], login_code)
+    assert e.value.code == "no_account"
+    assert (await svc.account(token))["sign_in"] == "password"
+    assert await svc.matrix.password_login("dave.miller", "a-new-password", "tablet")
+
+
+async def test_use_password_refuses_others_and_weak_passwords(svc):  # noqa: F811
+    token = (await signup_email(svc))["access_token"]
+    v = await svc.start_use_password(token, "1.2.3.4")
+    await svc.verify_code(v["verification_id"], svc.mailer.last_code())
+    with pytest.raises(ServiceError) as e:
+        await svc.use_password(token, {"verification_id": v["verification_id"], "new": "short"})
+    assert e.value.code == "weak_password"
+    _, other = await password_account(svc)
+    with pytest.raises(ServiceError) as e:  # someone else's confirmed code
+        await svc.use_password(other, {"verification_id": v["verification_id"], "new": "a-new-password"})
+    assert e.value.code == "not_confirmed"
+    with pytest.raises(ServiceError) as e:  # already on a password
+        await svc.start_use_password(other, "1.2.3.4")
+    assert e.value.code == "uses_password"
+    assert (await svc.account(token))["sign_in"] == "codes"
 
 
 async def test_delete_account(svc):  # noqa: F811

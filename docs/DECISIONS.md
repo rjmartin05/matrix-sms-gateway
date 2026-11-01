@@ -144,6 +144,13 @@
     relaxes the "never text first" rule (BRIEF §4) for that one message, once the 10DLC campaign is
     updated to cover it. Without it, nothing is sent until they text JOIN.
 
+## Decided (2026-10-30)
+
+- **D15 Code or password is each person's own setting, in the app.** One or the other: a code login
+  replaces the password, so they can't both work. Going to a password needs a code first, so a borrowed,
+  unlocked phone can't change it. The phone and email stay on the account for switching back. There's
+  no self-service reset for a forgotten password; the admin uses `link-account`.
+
 ## Open
 
 None.
